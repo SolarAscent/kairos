@@ -1,14 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
   <title id="title">此刻 · Life Decision</title>
-  <desc id="desc">Capture. Keep. Act. 让留下的念头，在合适的时候回来。</desc>
-  <rect width="1200" height="340" rx="24" fill="#12291f"/>
-  <g fill="none" stroke="#b7f9c4" opacity=".13">
-    <circle cx="1040" cy="170" r="200"/><circle cx="1040" cy="170" r="148"/><circle cx="1040" cy="170" r="96"/>
-    <path d="M820 170h380M1040 0v340"/>
+  <desc id="desc">让想做的事，遇见合适的时刻。黑色背景上的白色标题与银色轨道。</desc>
+  <defs>
+    <linearGradient id="silver" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#242424"/>
+      <stop offset=".43" stop-color="#d4d4d4"/>
+      <stop offset=".62" stop-color="#5a5a5a"/>
+      <stop offset="1" stop-color="#151515"/>
+    </linearGradient>
+  </defs>
+  <rect x=".5" y=".5" width="1199" height="319" rx="16" fill="#080808" stroke="#252525"/>
+  <text x="64" y="56" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" letter-spacing="4" fill="#919191">LIFE DECISION</text>
+  <text x="60" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="88" font-weight="650" letter-spacing="-4" fill="#f5f5f5">此刻</text>
+  <text x="64" y="218" font-family="system-ui, -apple-system, sans-serif" font-size="21" fill="#9c9c9c">让想做的事，遇见合适的时刻。</text>
+  <path d="M64 267H1136" stroke="#272727"/>
+  <g fill="none" stroke="url(#silver)" stroke-width="1.2">
+    <ellipse cx="945" cy="149" rx="134" ry="48" transform="rotate(-32 945 149)"/>
+    <ellipse cx="945" cy="149" rx="134" ry="48" transform="rotate(32 945 149)"/>
+    <ellipse cx="945" cy="149" rx="134" ry="48" transform="rotate(90 945 149)"/>
   </g>
-  <circle cx="1040" cy="170" r="10" fill="#c5f3a7"/>
-  <text x="66" y="68" font-family="monospace" font-size="13" letter-spacing="4" fill="#a1b7a7">LIFE DECISION / 0.1</text>
-  <text x="62" y="169" font-family="system-ui, sans-serif" font-size="76" font-weight="650" fill="#f7f5e9">此刻</text>
-  <text x="66" y="223" font-family="system-ui, sans-serif" font-size="22" fill="#b8cbbb">让留下的念头，在合适的时候回来。</text>
-  <text x="66" y="291" font-family="monospace" font-size="14" letter-spacing="3" fill="#c5f3a7">CAPTURE  →  KEEP  →  ACT</text>
+  <circle cx="945" cy="149" r="5" fill="#f5f5f5"/>
+  <circle cx="1059" cy="91" r="3" fill="#d9d9d9"/>
 </svg>
