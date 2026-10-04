@@ -1,0 +1,71 @@
+<view class="screen" style="padding-top: {{topInset}}px;">
+  <scroll-view class="content" scroll-y type="list">
+    <view class="page-body">
+      <view wx:if="{{!userId}}" class="welcome">
+        <text class="eyebrow">留一点时间，给自己</text>
+        <text class="headline">想做的事，
+从此刻开始。</text>
+        <text class="copy">留下一句话，让那些一直记着的念头，慢慢走进生活。</text>
+        <button class="primary login" bindtap="signIn" loading="{{busy}}" disabled="{{busy}}">{{loginLabel}}</button>
+        <text class="footnote">登录后，你留下的内容会保存到自己的账户。</text>
+      </view>
+      <block wx:elif="{{tab === 'now'}}">
+        <text class="eyebrow">给当下一个合适的开始</text>
+        <view class="context-row">
+          <picker range="{{minuteOptions}}" value="{{minuteIndex}}" bindchange="setMinutes" disabled="{{busy}}"><view class="context-chip">{{minuteOptions[minuteIndex]}}  ⌄</view></picker>
+          <picker range="{{moodOptions}}" value="{{moodIndex}}" bindchange="setMood" disabled="{{busy}}"><view class="context-chip">{{moodOptions[moodIndex]}}  ⌄</view></picker>
+        </view>
+        <view class="outdoors"><text>愿意出门走走</text><switch color="#233C35" checked="{{willingToGoOut}}" bindchange="setOutdoors" disabled="{{busy}}" /></view>
+        <view wx:if="{{recommendation}}" class="action-card">
+          <text class="eyebrow">此刻，可以</text>
+          <text class="headline">{{recommendation.headline}}</text>
+          <text class="copy">{{recommendation.body}}</text>
+          <view class="reason"><text>{{recommendation.reasonText}}</text></view>
+          <view class="action-row">
+            <button class="primary" data-type="ACCEPT" bindtap="feedback" disabled="{{busy}}" loading="{{busy}}">就做这个</button>
+            <button class="secondary" data-type="SKIP" bindtap="feedback" disabled="{{busy}}">换一个</button>
+          </view>
+        </view>
+        <view wx:else class="quiet">
+          <text class="headline">{{decided ? '现在，也可以\n不急着决定。' : '有一点空闲，\n想怎么度过？'}}</text>
+          <text class="copy">{{decided ? '暂时没有合适的建议。换个条件，或再留下一个想做的念头。' : '从你留下的念头里，找一件适合现在的小事。'}}</text>
+          <button class="primary" bindtap="decide" loading="{{busy}}" disabled="{{busy}}">{{decided ? '再看看' : '给我一个建议'}}</button>
+        </view>
+      </block>
+      <block wx:else>
+        <view class="section-head"><text class="section-title">最近留下</text><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">刷新</button></view>
+        <view wx:if="{{!life.length}}" class="empty"><text>还没有整理好的内容。
+点下方的 ＋，留下第一个念头。</text></view>
+        <view wx:for="{{life}}" wx:key="id" class="life-item">
+          <text class="item-title">{{item.title}}</text>
+          <text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text>
+        </view>
+        <view wx:if="{{captures.length}}" class="capture-section">
+          <text class="section-title small">原来那句话</text>
+          <view wx:for="{{captures}}" wx:key="id" class="capture-item">
+            <text class="capture-text">{{item.text}}</text><text class="status">{{item.statusLabel}}</text>
+          </view>
+        </view>
+        <button class="text-button logout" bindtap="signOut" disabled="{{busy}}">退出登录</button>
+      </block>
+      <text wx:if="{{notice}}" class="notice">{{notice}}</text>
+      <text wx:if="{{error && !sheet}}" class="error">{{error}}</text>
+    </view>
+  </scroll-view>
+  <view wx:if="{{userId}}" class="nav-area" style="padding-bottom: {{bottomInset}}px;">
+    <view class="bottom-nav">
+      <button class="nav-button {{tab === 'now' ? 'selected' : ''}}" data-tab="now" bindtap="switchTab">此刻</button>
+      <button class="capture-button" bindtap="openCapture" aria-label="留下一句话">＋</button>
+      <button class="nav-button {{tab === 'life' ? 'selected' : ''}}" data-tab="life" bindtap="switchTab">生活</button>
+    </view>
+  </view>
+  <view wx:if="{{sheet}}" class="scrim" bindtap="closeCapture">
+    <view class="input-sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 20}}px;">
+      <view class="section-head"><text class="section-title">留下一句话</text><button class="text-button" bindtap="closeCapture" disabled="{{busy}}">收起</button></view>
+      <textarea class="draft" value="{{draft}}" bindinput="editDraft" placeholder="想去哪里，想做什么，或一直没忘的事……" maxlength="5000" focus="{{sheet}}" disabled="{{busy}}" cursor-spacing="24" adjust-position />
+      <text wx:if="{{error}}" class="error">{{error}}</text>
+      <button class="primary" bindtap="saveCapture" loading="{{busy}}" disabled="{{busy}}">留下</button>
+      <text class="footnote">先收好，再慢慢理解。</text>
+    </view>
+  </view>
+</view>

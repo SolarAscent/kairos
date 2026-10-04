@@ -1,0 +1,7 @@
+{
+  "environment": "develop",
+  "appId": "touristappid",
+  "apiBaseUrl": "http://127.0.0.1:3000",
+  "loginMode": "wechat",
+  "appVersion": "0.2.0"
+}

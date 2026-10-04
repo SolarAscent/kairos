@@ -6,6 +6,15 @@ import type { CreateCaptureRequest } from "@life/contracts";
 import { DATABASE } from "../common/tokens.js";
 import { IdempotencyService } from "../common/idempotency.service.js";
 
+const captureFields = {
+  id: captures.id,
+  type: captures.captureType,
+  status: captures.status,
+  text: captures.textContent,
+  createdAt: captures.createdAt,
+  updatedAt: captures.updatedAt,
+};
+
 @Injectable()
 export class CapturesService {
   constructor(
@@ -41,7 +50,6 @@ export class CapturesService {
           aggregateId: captureId,
           eventType: "CAPTURE_CREATED",
           payload: { captureId, userId, traceId },
-          status: "PENDING",
         });
         return { captureId, status: "UPLOADED", accepted: true };
       },
@@ -51,14 +59,7 @@ export class CapturesService {
 
   async list(userId: string) {
     return this.db
-      .select({
-        id: captures.id,
-        type: captures.captureType,
-        status: captures.status,
-        text: captures.textContent,
-        createdAt: captures.createdAt,
-        updatedAt: captures.updatedAt,
-      })
+      .select(captureFields)
       .from(captures)
       .where(and(eq(captures.userId, userId), isNull(captures.deletedAt)))
       .orderBy(desc(captures.createdAt))
@@ -67,14 +68,7 @@ export class CapturesService {
 
   async get(userId: string, captureId: string) {
     const [capture] = await this.db
-      .select({
-        id: captures.id,
-        type: captures.captureType,
-        status: captures.status,
-        text: captures.textContent,
-        createdAt: captures.createdAt,
-        updatedAt: captures.updatedAt,
-      })
+      .select(captureFields)
       .from(captures)
       .where(
         and(eq(captures.id, captureId), eq(captures.userId, userId), isNull(captures.deletedAt)),

@@ -42,6 +42,11 @@ export class IdempotencyService {
         message: "Provide a UUID X-Idempotency-Key.",
       });
     const key = parsedKey.data;
+    const recordKey = and(
+      eq(idempotencyKeys.userId, userId),
+      eq(idempotencyKeys.route, route),
+      eq(idempotencyKeys.idempotencyKey, key),
+    );
     const requestHash = createHash("sha256").update(stable(requestBody)).digest("hex");
     return this.db.transaction(async (tx) => {
       await tx
@@ -54,17 +59,7 @@ export class IdempotencyService {
           expiresAt: new Date(Date.now() + 7 * 86400000),
         })
         .onConflictDoNothing();
-      const [saved] = await tx
-        .select()
-        .from(idempotencyKeys)
-        .where(
-          and(
-            eq(idempotencyKeys.userId, userId),
-            eq(idempotencyKeys.route, route),
-            eq(idempotencyKeys.idempotencyKey, key),
-          ),
-        )
-        .for("update");
+      const [saved] = await tx.select().from(idempotencyKeys).where(recordKey).for("update");
       if (!saved) throw new Error("IDEMPOTENCY_RECORD_MISSING");
       const expired = saved.expiresAt <= new Date();
       if (expired) {
@@ -76,13 +71,7 @@ export class IdempotencyService {
             responseStatus: null,
             expiresAt: new Date(Date.now() + 7 * 86400000),
           })
-          .where(
-            and(
-              eq(idempotencyKeys.userId, userId),
-              eq(idempotencyKeys.route, route),
-              eq(idempotencyKeys.idempotencyKey, key),
-            ),
-          );
+          .where(recordKey);
       } else {
         if (saved.requestHash !== requestHash)
           throw new ConflictException({
@@ -95,13 +84,7 @@ export class IdempotencyService {
       await tx
         .update(idempotencyKeys)
         .set({ responseStatus: 201, responseBody: body })
-        .where(
-          and(
-            eq(idempotencyKeys.userId, userId),
-            eq(idempotencyKeys.route, route),
-            eq(idempotencyKeys.idempotencyKey, key),
-          ),
-        );
+        .where(recordKey);
       return { body, replayed: false };
     });
   }

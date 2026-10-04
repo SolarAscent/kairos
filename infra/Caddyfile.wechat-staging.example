@@ -1,0 +1,13 @@
+# Replace this hostname with an owned, verified DNS name.
+# Append only this site block to the existing gateway configuration after backup.
+# Never replace the existing Caddyfile with this file.
+kairos-test.example.com {
+    # Caddy is expected to use the host network for this loopback upstream.
+    @api path /v1/* /health/live /health/ready
+    handle @api {
+        reverse_proxy 127.0.0.1:3100
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

@@ -238,3 +238,22 @@ export const nowResponseSchema = z.object({
     .nullable(),
   candidates: z.array(publicCandidateSchema),
 });
+
+export const lifeListItemSchema = z.object({
+  id: uuidSchema,
+  title: z.string(),
+  summary: z.string().nullable(),
+  kind: facetTypeSchema,
+  status: lifeStatusSchema,
+  importance: z.number().nullable(),
+  createdAt: z.iso.datetime(),
+  searchText: z.string().nullable(),
+  displayKind: z.string().nullable(),
+});
+export const lifeListResponseSchema = z.array(lifeListItemSchema);
+export const captureListResponseSchema = z.array(captureResponseSchema);
+export const logoutResponseSchema = z.object({ loggedOut: z.literal(true) });
+export type AuthResponse = z.infer<typeof authResponseSchema>;
+export type LifeListItem = z.infer<typeof lifeListItemSchema>;
+export type CaptureResponse = z.infer<typeof captureResponseSchema>;
+export type NowResponse = z.infer<typeof nowResponseSchema>;

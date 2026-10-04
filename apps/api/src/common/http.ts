@@ -19,8 +19,7 @@ export const CurrentUser = createParamDecorator(
 
 export function parseBody<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
-  if (!result.success)
-    throw new BadRequestException({ code: "VALIDATION_ERROR", details: result.error.flatten() });
+  if (!result.success) throw new BadRequestException({ code: "VALIDATION_ERROR" });
   return result.data;
 }
 

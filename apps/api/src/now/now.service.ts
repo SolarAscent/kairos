@@ -44,7 +44,7 @@ export class NowService {
           id: uuidv7(),
           userId,
           decisionSessionId: sessionId,
-          context: context,
+          context,
           containsPreciseLocation: false,
         });
         const baseConditions = [
@@ -102,6 +102,7 @@ export class NowService {
           });
         }
         const best = ranked.find((candidate) => candidate.hardFilterReason == null);
+        const candidates = ranked.map(this.toPublicCandidate);
         if (!best || best.totalScore < interventionThreshold) {
           await tx
             .update(decisionSessions)
@@ -111,7 +112,7 @@ export class NowService {
             sessionId,
             status: "QUIET",
             recommendation: null,
-            candidates: ranked.map(this.toPublicCandidate),
+            candidates,
           };
         }
         const recommendationId = uuidv7();
@@ -144,7 +145,7 @@ export class NowService {
             executionType: best.executionType,
             score: best.totalScore,
           },
-          candidates: ranked.map(this.toPublicCandidate),
+          candidates,
         };
       },
     );
