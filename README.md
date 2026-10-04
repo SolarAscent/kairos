@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/cover.svg" alt="此刻：让想做的事，遇见合适的时刻。" width="100%" /></p>
+<p align="center"><img src="docs/assets/cover-black.svg" alt="此刻：让想做的事，遇见合适的时刻。" width="100%" /></p>
 
 此刻是一款正在开发的生活决策助手。你可以随手留下想去的地方、想看的内容或一直想做的事，它会结合当下的时间和行动条件，帮你找到一个合适的开始，让那些保存过的念头真正走进生活。
 
