@@ -7,14 +7,15 @@ import {
   createFeedbackRequestSchema,
   createNowSessionRequestSchema,
   feedbackAcceptedSchema,
-  lifeListResponseSchema,
+  lifeSectionsResponseSchema,
   nowResponseSchema,
   type CaptureResponse,
-  type LifeListItem,
+  type LifeSections,
   type NowResponse,
 } from "@life/contracts";
-import { client, sessionStore } from "../../lib/session";
+import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
+const { client, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
 
 type Pending = { signature: string; key: string };
 const statusLabels: Record<string, string> = {
@@ -57,7 +58,7 @@ function createData() {
     moodOptions: ["都可以", "想歇一歇", "想试点新的", "想和人见面"],
     moodIndex: 0,
     willingToGoOut: false,
-    life: [] as LifeListItem[],
+    sections: [] as LifeSections,
     captures: [] as (CaptureResponse & { statusLabel: string })[],
     recommendation: null as NowResponse["recommendation"],
     sessionId: "",
@@ -78,7 +79,7 @@ Page({
     this.updateData({
       draft: "",
       notice: "",
-      life: [],
+      sections: [],
       captures: [],
       recommendation: null,
       sessionId: "",
@@ -210,12 +211,12 @@ Page({
     state.loadingLists = true;
     if (state.poll) clearTimeout(state.poll);
     try {
-      const [life, captures] = await Promise.all([
-        client.request("/v1/life", lifeListResponseSchema),
+      const [sections, captures] = await Promise.all([
+        client.request("/v1/life/sections", lifeSectionsResponseSchema),
         client.request("/v1/captures", captureListResponseSchema),
       ]);
       this.updateData({
-        life,
+        sections,
         captures: captures.map((item) => ({
           ...item,
           statusLabel: statusLabels[item.status] ?? item.status,
@@ -237,6 +238,15 @@ Page({
     state.pollCount = 0;
     this.updateData({ error: "" });
     void this.refreshLists();
+  },
+  openSection(event: WechatMiniprogram.TouchEvent) {
+    const section = event.currentTarget.dataset.section;
+    wx.navigateTo({
+      url: `/pages/life-list/index?section=${section}`,
+      fail: () => {
+        this.updateData({ error: "暂时无法打开列表，请重试。" });
+      },
+    });
   },
   setMinutes(event: WechatMiniprogram.PickerChange) {
     this.updateData({ minuteIndex: Number(event.detail.value) });

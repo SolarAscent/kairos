@@ -14,6 +14,8 @@ import {
   feedbackAcceptedSchema,
   lifeListResponseSchema,
   captureListResponseSchema,
+  lifeSectionsResponseSchema,
+  lifeSearchResponseSchema,
 } from "@life/contracts";
 
 const testUrl = process.env.TEST_DATABASE_URL;
@@ -279,6 +281,152 @@ describe("PostgreSQL + HTTP + Worker", () => {
     await worker.processNext();
     const signals = await pool.query("SELECT * FROM preference_signals WHERE user_id=$1", [userId]);
     expect(signals.rows).toHaveLength(1);
+  });
+  it("retains three sequential captures in Life sections and the full list while Now remains a single action", async () => {
+    const guest = (await request("POST", "/v1/auth/wechat/login", { code: randomUUID() })).json()
+      .data;
+    for (const text of ["想读一本书", "想在家练习画画", "想看一部电影"]) {
+      expect(
+        (await request("POST", "/v1/captures", { type: "TEXT", text }, guest.accessToken))
+          .statusCode,
+      ).toBe(201);
+      await worker.processNext();
+    }
+    const groups = lifeSectionsResponseSchema.parse(
+      (await request("GET", "/v1/life/sections", undefined, guest.accessToken)).json().data,
+    );
+    expect(groups.find((group) => group.section === "RECENT")!.items).toHaveLength(3);
+    const result = lifeSearchResponseSchema.parse(
+      (await request("POST", "/v1/life/search", {}, guest.accessToken)).json().data,
+    );
+    expect(result.items).toHaveLength(3);
+    expect(result.nextCursor).toBeNull();
+    const decision = nowResponseSchema.parse(
+      (await request("POST", "/v1/now/sessions", {}, guest.accessToken)).json().data,
+    );
+    expect(decision.candidates).toHaveLength(3);
+    expect(decision.recommendation).not.toBeNull();
+    expect(
+      (
+        await pool.query("SELECT * FROM recommendations WHERE decision_session_id=$1", [
+          decision.sessionId,
+        ])
+      ).rowCount,
+    ).toBe(1);
+    const refreshed = lifeSearchResponseSchema.parse(
+      (await request("POST", "/v1/life/search", {}, guest.accessToken)).json().data,
+    );
+    expect(refreshed.items.map((item) => item.id)).toEqual(result.items.map((item) => item.id));
+  });
+  it("pages beyond the legacy 100-record cap without losing equal microsecond timestamps", async () => {
+    const guest = (await request("POST", "/v1/auth/wechat/login", { code: randomUUID() })).json()
+      .data;
+    const ids = Array.from({ length: 121 }, () => randomUUID());
+    await pool.query(
+      "INSERT INTO life_objects(id,user_id,title,kind,created_at) SELECT id,$2,'分页记录','DESIRE',date_trunc('second',now())-interval '2 days'+interval '0.123456 seconds' FROM unnest($1::uuid[]) AS id",
+      [ids, guest.userId],
+    );
+    expect(
+      (await request("GET", "/v1/life", undefined, guest.accessToken)).json().data,
+    ).toHaveLength(100);
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await request(
+        "POST",
+        "/v1/life/search",
+        { limit: 17, cursor },
+        guest.accessToken,
+      );
+      expect(response.statusCode).toBe(200);
+      const result = lifeSearchResponseSchema.parse(response.json().data);
+      seen.push(...result.items.map((item) => item.id));
+      cursor = result.nextCursor ?? undefined;
+      if (cursor)
+        expect(JSON.parse(Buffer.from(cursor, "base64url").toString()).createdAt).toMatch(
+          /123456Z$/,
+        );
+      expect(seen.length).toBeLessThanOrEqual(121);
+    } while (cursor);
+    expect(seen).toHaveLength(121);
+    expect(new Set(seen)).toEqual(new Set(ids));
+    expect(
+      (await request("POST", "/v1/life/search", { cursor: "bad-cursor" }, guest.accessToken))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (await request("POST", "/v1/life/search", {}, otherToken)).json().data.items,
+    ).toHaveLength(0);
+  });
+  it("filters saved time, kind and recorded location without inventing coordinates or leaking other users", async () => {
+    const guest = (await request("POST", "/v1/auth/wechat/login", { code: randomUUID() })).json()
+      .data;
+    const near = randomUUID(),
+      far = randomUUID(),
+      old = randomUUID(),
+      unknown = randomUUID(),
+      removed = randomUUID(),
+      resolved = randomUUID();
+    for (const [id, kind, status, age] of [
+      [near, "PLACE", "ACTIVE", 1],
+      [far, "PLACE", "ACTIVE", 2],
+      [old, "DESIRE", "ACTIVE", 60],
+      [unknown, "MEDIA", "ACTIVE", 1],
+      [removed, "PLACE", "DELETED", 1],
+      [resolved, "EVENT", "RESOLVED", 1],
+    ] as const) {
+      await pool.query(
+        "INSERT INTO life_objects(id,user_id,title,kind,status,created_at) VALUES($1,$2,$3,$4,$5,now()-$6*interval '1 day')",
+        [id, guest.userId, kind, kind, status, age],
+      );
+    }
+    for (const [id, latitude, longitude, nextDays] of [
+      [near, 23.129, 113.264, 2],
+      [far, 24.0, 114.0, 60],
+      [removed, 23.129, 113.264, 1],
+    ] as const) {
+      await pool.query(
+        "INSERT INTO life_object_projection(life_object_id,user_id,display_kind,latitude,longitude,coordinate_system,next_at,search_text,projection_version) VALUES($1,$2,'PLACE',$3,$4,'GCJ02',now()+$5*interval '1 day','地点','test-v1')",
+        [id, guest.userId, latitude, longitude, nextDays],
+      );
+    }
+    const search = async (input: object) => {
+      const response = await request("POST", "/v1/life/search", input, guest.accessToken);
+      expect(response.statusCode).toBe(200);
+      return lifeSearchResponseSchema.parse(response.json().data).items;
+    };
+    expect(new Set((await search({ savedWithinDays: 7 })).map((item) => item.id))).toEqual(
+      new Set([near, far, unknown]),
+    );
+    expect((await search({ kind: "MEDIA" })).map((item) => item.id)).toEqual([unknown]);
+    expect(new Set((await search({ location: "LOCATED" })).map((item) => item.id))).toEqual(
+      new Set([near, far]),
+    );
+    expect(new Set((await search({ location: "UNLOCATED" })).map((item) => item.id))).toEqual(
+      new Set([old, unknown]),
+    );
+    const nearby = await search({
+      location: "NEARBY",
+      center: {
+        latitude: 23.129,
+        longitude: 113.264,
+        coordinateSystem: "GCJ02",
+        radiusMeters: 1000,
+      },
+    });
+    expect(nearby.map((item) => item.id)).toEqual([near]);
+    expect(nearby[0]!.distanceMeters).toBeLessThan(1);
+    expect((await search({ section: "UPCOMING" })).map((item) => item.id)).toEqual([near]);
+    expect((await search({ section: "REMEMBERED" })).map((item) => item.id)).toEqual([old]);
+    expect((await search({ section: "HAPPENED" })).map((item) => item.id)).toEqual([resolved]);
+    expect(
+      (await request("POST", "/v1/life/search", { location: "NEARBY" }, guest.accessToken))
+        .statusCode,
+    ).toBe(400);
+    const groups = lifeSectionsResponseSchema.parse(
+      (await request("GET", "/v1/life/sections", undefined, guest.accessToken)).json().data,
+    );
+    expect(groups.some((group) => group.section === "RETURN")).toBe(false);
   });
   it("preserves input on model failure and exhausts retries without Mock fallback", async () => {
     const id = await createCapture("模型错误测试");

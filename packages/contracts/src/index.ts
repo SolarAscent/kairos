@@ -251,6 +251,64 @@ export const lifeListItemSchema = z.object({
   displayKind: z.string().nullable(),
 });
 export const lifeListResponseSchema = z.array(lifeListItemSchema);
+export const lifeSectionSchema = z.enum([
+  "UPCOMING",
+  "RECENT",
+  "RETURN",
+  "REMEMBERED",
+  "THINKING",
+  "HAPPENED",
+]);
+export const lifeSectionTitles: Record<z.infer<typeof lifeSectionSchema>, string> = {
+  RECENT: "最近留下",
+  UPCOMING: "快到了",
+  RETURN: "常回去",
+  REMEMBERED: "一直没忘",
+  THINKING: "最近总在想",
+  HAPPENED: "已经发生",
+};
+export const lifeBrowseItemSchema = lifeListItemSchema.extend({
+  nextAt: z.iso.datetime().nullable(),
+  expiresAt: z.iso.datetime().nullable(),
+  hasLocation: z.boolean(),
+  distanceMeters: z.number().nonnegative().nullable(),
+});
+export const lifeSearchRequestSchema = z
+  .object({
+    section: lifeSectionSchema.default("RECENT"),
+    savedWithinDays: z.union([z.literal(7), z.literal(30), z.literal(90)]).optional(),
+    kind: facetTypeSchema.optional(),
+    location: z.enum(["ALL", "LOCATED", "UNLOCATED", "NEARBY"]).default("ALL"),
+    center: z
+      .object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        coordinateSystem: z.literal("GCJ02"),
+        radiusMeters: z.union([z.literal(1000), z.literal(3000), z.literal(10000)]),
+      })
+      .optional(),
+    cursor: z.string().min(1).max(256).optional(),
+    limit: z.number().int().min(1).max(50).default(20),
+  })
+  .refine((input) => input.location !== "NEARBY" || input.center != null, {
+    message: "Nearby requires a coordinate and radius",
+    path: ["center"],
+  });
+export const lifeSearchResponseSchema = z.object({
+  items: z.array(lifeBrowseItemSchema),
+  nextCursor: z.string().nullable(),
+});
+export const lifeSectionsResponseSchema = z.array(
+  z.object({
+    section: lifeSectionSchema,
+    title: z.string(),
+    items: z.array(lifeBrowseItemSchema),
+  }),
+);
+export type LifeSection = z.infer<typeof lifeSectionSchema>;
+export type LifeBrowseItem = z.infer<typeof lifeBrowseItemSchema>;
+export type LifeSearchRequest = z.infer<typeof lifeSearchRequestSchema>;
+export type LifeSections = z.infer<typeof lifeSectionsResponseSchema>;
 export const captureListResponseSchema = z.array(captureResponseSchema);
 export const logoutResponseSchema = z.object({ loggedOut: z.literal(true) });
 export type AuthResponse = z.infer<typeof authResponseSchema>;

@@ -1,5 +1,9 @@
 {
-  "pages": ["pages/home/index"],
+  "pages": ["pages/home/index", "pages/life-list/index"],
+  "permission": {
+    "scope.userLocation": { "desc": "仅在你选择附近范围时，用当前位置筛选已记录的地点" }
+  },
+  "requiredPrivateInfos": ["getLocation"],
   "window": {
     "navigationStyle": "custom",
     "backgroundColor": "#F5F7F6",

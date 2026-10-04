@@ -33,12 +33,17 @@
         </view>
       </block>
       <block wx:else>
-        <view class="section-head"><text class="section-title">最近留下</text><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">刷新</button></view>
-        <view wx:if="{{!life.length}}" class="empty"><text>还没有整理好的内容。
+        <view class="section-head"><text class="section-title">生活里留下的</text><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">刷新</button></view>
+        <view wx:if="{{!sections.length}}" class="empty"><text>还没有整理好的内容。
 点下方的 ＋，留下第一个念头。</text></view>
-        <view wx:for="{{life}}" wx:key="id" class="life-item">
-          <text class="item-title">{{item.title}}</text>
-          <text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text>
+        <view wx:for="{{sections}}" wx:for-item="group" wx:key="section" class="life-section">
+          <button class="section-link" data-section="{{group.section}}" bindtap="openSection">
+            <text class="section-title small">{{group.title}}</text><text class="section-more">查看全部 ›</text>
+          </button>
+          <view wx:for="{{group.items}}" wx:key="id" class="life-item" data-section="{{group.section}}" bindtap="openSection">
+            <text class="item-title">{{item.title}}</text>
+            <text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text>
+          </view>
         </view>
         <view wx:if="{{captures.length}}" class="capture-section">
           <text class="section-title small">原来那句话</text>

@@ -26,7 +26,11 @@
 .section-title { font-size: 42rpx; font-weight: 500; }
 .section-title.small { font-size: 30rpx; margin-bottom: 18rpx; }
 .text-button { color: #72827B; font-size: 25rpx; padding: 10rpx 18rpx; line-height: 56rpx; }
-.life-item { padding: 30rpx 0; border-bottom: 2rpx solid #DEE7DF; }
+.life-section { background: #FFFFFF; border-radius: 28rpx; padding: 28rpx; margin-bottom: 28rpx; }
+.section-link { display: flex; align-items: center; justify-content: space-between; text-align: left; }
+.section-link .section-title { margin-bottom: 0; }
+.section-more { font-size: 24rpx; color: #72827B; }
+.life-item { padding: 24rpx; background: #F5F7F6; border-radius: 20rpx; margin-top: 18rpx; }
 .item-title { font-size: 34rpx; line-height: 1.6; }
 .item-summary { margin-top: 16rpx; color: #72827B; font-size: 27rpx; line-height: 1.8; }
 .empty { color: #72827B; line-height: 2; padding: 56rpx 0; white-space: pre-line; }

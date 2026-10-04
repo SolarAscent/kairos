@@ -1,4 +1,3 @@
-import { ClientError } from "./client";
 const messages: Record<string, string> = {
   LOGIN_REQUIRED: "登录已过期，请重新登录。",
   SESSION_CHANGED: "登录状态已改变，请重新操作。",
@@ -16,6 +15,13 @@ const messages: Record<string, string> = {
   STORAGE_UNAVAILABLE: "本机存储不可用，请清理空间后重试。",
 };
 export function userMessage(error: unknown) {
-  if (error instanceof ClientError) return messages[error.code] ?? "暂时无法完成，请稍后重试。";
+  // Pages are separate bundles; the app's ClientError constructor has a different identity.
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  )
+    return messages[error.code] ?? "暂时无法完成，请稍后重试。";
   return "暂时无法完成，请稍后重试。";
 }

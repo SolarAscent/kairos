@@ -37,8 +37,9 @@ try {
     }
   }
   await assets(src);
+  const app = JSON.parse(await readFile(resolve(src, "app.json"), "utf8"));
   await build({
-    entryPoints: [resolve(src, "app.ts"), resolve(src, "pages/home/index.ts")],
+    entryPoints: [resolve(src, "app.ts"), ...app.pages.map((page) => resolve(src, page + ".ts"))],
     outbase: src,
     outdir: out,
     bundle: true,

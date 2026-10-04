@@ -1,0 +1,27 @@
+<view class="list-screen" style="padding-top: {{topInset}}px; padding-bottom: {{bottomInset}}px;">
+  <view class="list-header"><button class="back" bindtap="goBack">‹ 返回</button><button class="refresh" bindtap="refresh" disabled="{{loading || locating}}">刷新</button></view>
+  <text class="list-title">{{title}}</text>
+  <view class="filters">
+    <picker range="{{timeOptions}}" value="{{timeIndex}}" bindchange="setTime" disabled="{{locating}}"><view class="filter"><text class="filter-label">留下时间</text><text>{{timeOptions[timeIndex]}} ⌄</text></view></picker>
+    <picker range="{{kindOptions}}" value="{{kindIndex}}" bindchange="setKind" disabled="{{locating}}"><view class="filter"><text class="filter-label">内容类型</text><text>{{kindOptions[kindIndex]}} ⌄</text></view></picker>
+    <picker range="{{locationOptions}}" value="{{locationIndex}}" bindchange="setLocation" disabled="{{locating}}"><view class="filter"><text class="filter-label">地点范围</text><text>{{locating ? '获取位置中…' : locationOptions[locationIndex] + ' ⌄'}}</text></view></picker>
+  </view>
+  <text wx:if="{{locationIndex >= 3}}" class="location-note">仅筛选已有地点坐标的内容，距离为直线估算。</text>
+  <text wx:if="{{error}}" class="list-error">{{error}}</text>
+  <scroll-view class="list-content" scroll-y type="list" bindscrolltolower="loadMore" lower-threshold="120">
+    <view class="list-body">
+      <view wx:for="{{items}}" wx:key="id" class="object-card">
+        <text class="kind">{{item.kindLabel}}</text><text class="object-title">{{item.title}}</text>
+        <text wx:if="{{item.summary}}" class="summary">{{item.summary}}</text>
+        <text class="metadata">留下于 {{item.savedDate}} · {{item.locationLabel}}</text>
+        <text wx:if="{{item.nextDate}}" class="metadata">时间节点 {{item.nextDate}}</text>
+        <text wx:if="{{item.expiryDate}}" class="metadata">有效至 {{item.expiryDate}}</text>
+      </view>
+      <text wx:if="{{loaded && !items.length}}" class="empty-list">{{locationIndex >= 3 ? '这个范围内暂时没有已记录坐标的内容。可选「全部地点」查看其他记录。' : '这个筛选条件下暂无内容。试试其他时间或地点范围。'}}</text>
+      <text wx:if="{{loading}}" class="list-status">正在查看…</text>
+      <button wx:elif="{{nextCursor}}" class="more" bindtap="loadMore">继续查看</button>
+      <text wx:elif="{{loaded && items.length}}" class="list-status">这一组已全部展示</text>
+      <button wx:if="{{error}}" class="more" bindtap="retry">重试</button>
+    </view>
+  </scroll-view>
+</view>
