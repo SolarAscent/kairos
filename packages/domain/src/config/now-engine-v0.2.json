@@ -1,0 +1,6 @@
+{
+  "version": "now-engine-v0.2",
+  "weights": { "value": 0.4, "fit": 0.3, "urgency": 0.2, "friction": -0.2 },
+  "intervention_threshold": 0.34,
+  "note": "Initial demo ranking weights; tune only against an explicit evaluation set."
+}

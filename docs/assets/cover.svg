@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">此刻 · Life Decision</title>
+  <desc id="desc">Capture. Keep. Act. 让留下的念头，在合适的时候回来。</desc>
+  <rect width="1200" height="340" rx="24" fill="#12291f"/>
+  <g fill="none" stroke="#b7f9c4" opacity=".13">
+    <circle cx="1040" cy="170" r="200"/><circle cx="1040" cy="170" r="148"/><circle cx="1040" cy="170" r="96"/>
+    <path d="M820 170h380M1040 0v340"/>
+  </g>
+  <circle cx="1040" cy="170" r="10" fill="#c5f3a7"/>
+  <text x="66" y="68" font-family="monospace" font-size="13" letter-spacing="4" fill="#a1b7a7">LIFE DECISION / 0.1</text>
+  <text x="62" y="169" font-family="system-ui, sans-serif" font-size="76" font-weight="650" fill="#f7f5e9">此刻</text>
+  <text x="66" y="223" font-family="system-ui, sans-serif" font-size="22" fill="#b8cbbb">让留下的念头，在合适的时候回来。</text>
+  <text x="66" y="291" font-family="monospace" font-size="14" letter-spacing="3" fill="#c5f3a7">CAPTURE  →  KEEP  →  ACT</text>
+</svg>

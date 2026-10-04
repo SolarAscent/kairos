@@ -1,0 +1,31 @@
+{
+  "name": "life-decision-mini-program",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present build",
+    "dev:api": "pnpm --filter @life/api dev",
+    "dev:worker": "pnpm --filter @life/worker dev",
+    "dev:demo": "pnpm --filter @life/demo dev",
+    "db:migrate": "pnpm --filter @life/db migrate",
+    "db:generate": "pnpm --filter @life/db generate",
+    "test": "pnpm build && vitest run tests/unit",
+    "test:integration": "pnpm build && vitest run tests/integration",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^5.0.3",
+    "@life/contracts": "workspace:*",
+    "@life/domain": "workspace:*",
+    "@life/agent-core": "workspace:*",
+    "@life/db": "workspace:*",
+    "zod": "^4.1.5"
+  }
+}

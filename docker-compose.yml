@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: life_decision
+      POSTGRES_USER: life
+      POSTGRES_PASSWORD: life
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U life -d life_decision"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgres://life:life@postgres:5432/life_decision
+    command: ["node", "packages/db/dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+      target: api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://life:life@postgres:5432/life_decision
+      DEMO_ORIGIN: http://localhost:4173
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/health/ready >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+      target: worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://life:life@postgres:5432/life_decision
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  demo:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+      target: demo
+    ports:
+      - "127.0.0.1:4173:4173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

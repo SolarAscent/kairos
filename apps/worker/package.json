@@ -1,0 +1,26 @@
+{
+  "name": "@life/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@life/agent-core": "workspace:*",
+    "@life/contracts": "workspace:*",
+    "@life/domain": "workspace:*",
+    "dotenv": "^17.2.2",
+    "pg": "^8.16.3",
+    "uuid": "^11.1.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

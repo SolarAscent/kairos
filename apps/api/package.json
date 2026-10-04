@@ -1,0 +1,36 @@
+{
+  "name": "@life/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@life/contracts": "workspace:*",
+    "@life/db": "workspace:*",
+    "@life/domain": "workspace:*",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/static": "^10.1.5",
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-fastify": "^11.1.6",
+    "@nestjs/swagger": "^11.2.0",
+    "drizzle-orm": "^0.44.5",
+    "dotenv": "^17.2.2",
+    "fastify": "^5.5.0",
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "uuid": "^11.1.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

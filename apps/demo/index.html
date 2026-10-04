@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3f1e9" />
+    <title>此刻 · 生活决策 Demo</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAPTURE → LIFE → ACTION</p>
+          <h1>让留下的念头，<br /><em>在合适的时候回来。</em></h1>
+        </div>
+        <div class="session">
+          <span id="session-state">未登录</span>
+          <button id="login-button" class="quiet-button">本地演示登录</button>
+        </div>
+      </header>
+
+      <section class="layout">
+        <div class="column">
+          <section class="panel capture-panel">
+            <div class="section-heading">
+              <span class="step">01</span>
+              <div>
+                <h2>先留下</h2>
+                <p>先保存，再由后台慢慢理解。</p>
+              </div>
+            </div>
+            <form id="capture-form">
+              <label for="capture-text">一句话、一个想法，或刚看到的地方</label>
+              <textarea
+                id="capture-text"
+                maxlength="5000"
+                placeholder="比如：周末想去看那个新的摄影展，最好下午人少一些。"
+              ></textarea>
+              <div class="form-footer">
+                <small>最多 5000 字</small
+                ><button type="submit" class="primary-button">收到这条记录 <span>↗</span></button>
+              </div>
+            </form>
+            <p id="capture-message" class="message" aria-live="polite"></p>
+          </section>
+
+          <section class="panel">
+            <div class="section-heading">
+              <span class="step">02</span>
+              <div>
+                <h2>生活里留下的</h2>
+                <p>对象来自你的记录，并保留来源。</p>
+              </div>
+            </div>
+            <div id="life-list" class="life-list"><div class="empty">登录后开始记录。</div></div>
+          </section>
+        </div>
+
+        <div class="column">
+          <section class="now-card">
+            <div class="now-orbit" aria-hidden="true"></div>
+            <div class="section-heading">
+              <span class="step light">03</span>
+              <div>
+                <h2>此刻可以做什么</h2>
+                <p>只给一个行动；条件不合适时就安静。</p>
+              </div>
+            </div>
+            <form id="context-form" class="context-form">
+              <label
+                >这段时间大约有
+                <select id="minutes">
+                  <option value="">不确定</option>
+                  <option value="15">15 分钟</option>
+                  <option value="30">半小时</option>
+                  <option value="60">一小时</option>
+                  <option value="120">两小时</option>
+                </select>
+              </label>
+              <label
+                >现在的状态
+                <select id="mood">
+                  <option value="">不指定</option>
+                  <option value="LOW_ENERGY">想轻松一点</option>
+                  <option value="NEUTRAL">普通</option>
+                  <option value="CURIOUS">想探索</option>
+                  <option value="SOCIAL">想和人一起</option>
+                </select>
+              </label>
+              <label class="check"><input id="go-out" type="checkbox" checked /> 可以出门</label>
+              <button type="submit" class="light-button">替我定一下 <span>→</span></button>
+            </form>
+            <div id="recommendation" class="recommendation">
+              <p class="quiet-note">登录并留下一条记录，建议才有依据。</p>
+            </div>
+          </section>
+
+          <section class="panel activity-panel">
+            <div class="section-heading">
+              <span class="step">04</span>
+              <div>
+                <h2>最近留下</h2>
+                <p>原始输入会保留，处理状态可追踪。</p>
+              </div>
+            </div>
+            <div id="capture-list" class="capture-list">
+              <div class="empty">还没有输入记录。</div>
+            </div>
+          </section>
+        </div>
+      </section>
+      <footer>
+        <span>本地 Demo · 规则排序 · Provider 可配置</span><span id="api-url-label"></span>
+      </footer>
+    </main>
+  </body>
+</html>
