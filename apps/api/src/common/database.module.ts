@@ -33,5 +33,3 @@ class DatabaseLifecycle implements OnApplicationShutdown {
   exports: [DATABASE, PG_POOL],
 })
 export class DatabaseModule {}
-
-export type { Database };

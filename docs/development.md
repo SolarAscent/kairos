@@ -16,6 +16,8 @@ pnpm dev:demo
 
 `dev:*` 使用共享包的 `dist`；修改 contracts/domain/agent-core/db 后重新执行 `pnpm build`。网页只用于本地调试，正式客户端仍采用微信原生小程序。网页通过 `VITE_API_BASE_URL` 指向 API，默认 `http://localhost:3000`。
 
+原生工程位于 `apps/miniprogram`，使用 `pnpm build:miniprogram` 构建并导入生成的 `dist`。本地模拟与真实微信的配置、部署准备和验收步骤见[微信接入说明](wechat-setup.md)。
+
 `MODEL_PROVIDER=mock` 显式启用规则模拟；`openai-responses` 使用 `.env` 中的 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。未配置或拼错 Provider 会报错。真实模型失败进入 Outbox 重试，最多 8 次，原始输入保留；不会自动改成 Mock 伪装成功。生产禁止 `WECHAT_MOCK_LOGIN=true`。
 
 ## 验证

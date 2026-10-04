@@ -1,3 +1,5 @@
+import { createWriteOperation } from "./write-operation";
+
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
 const TOKEN_KEY = "life-demo-token";
 const INSTALLATION_KEY = "life-demo-installation";
@@ -5,6 +7,11 @@ let accessToken = localStorage.getItem(TOKEN_KEY);
 let activeSessionId = null;
 let currentTargetId = null;
 let feedbackPending = false;
+let feedbackAttempt = null;
+let decisionPending = false;
+const saveCapture = createWriteOperation(request);
+const createDecision = createWriteOperation(request);
+const recordFeedback = createWriteOperation(request);
 const excludedObjectIds = new Set();
 
 const byId = (id) => document.getElementById(id);
@@ -15,10 +22,12 @@ function setSessionLabel(text) {
 }
 
 async function request(path, options = {}) {
+  const usedToken = accessToken;
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (accessToken) headers.Authorization = "Bearer " + accessToken;
   const response = await fetch(API + path, { ...options, headers });
   const payload = await response.json();
+  if (accessToken !== usedToken) throw new Error("登录状态已改变，请重新操作。");
   if (!response.ok) {
     const error = payload.error || {};
     if (response.status === 401) {
@@ -48,6 +57,9 @@ function updateLoginState() {
 }
 
 byId("login-button").addEventListener("click", async () => {
+  const button = byId("login-button");
+  if (button.disabled) return;
+  button.disabled = true;
   try {
     const installation = localStorage.getItem(INSTALLATION_KEY) || crypto.randomUUID();
     localStorage.setItem(INSTALLATION_KEY, installation);
@@ -60,6 +72,8 @@ byId("login-button").addEventListener("click", async () => {
     updateLoginState();
   } catch (error) {
     setSessionLabel(error.message);
+  } finally {
+    button.disabled = false;
   }
 });
 
@@ -67,17 +81,13 @@ byId("capture-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = byId("capture-text").value.trim();
   if (!text) return;
-  const submit = event.submitter;
+  const submit = byId("capture-form").querySelector('button[type="submit"]');
   if (submit.disabled) return;
   submit.disabled = true;
   const message = byId("capture-message");
   message.textContent = "";
   try {
-    const data = await request("/v1/captures", {
-      method: "POST",
-      headers: { "X-Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ type: "TEXT", text, sourceChannel: "DEMO" }),
-    });
+    const data = await saveCapture("/v1/captures", { type: "TEXT", text, sourceChannel: "DEMO" });
     byId("capture-text").value = "";
     message.textContent = "收到了。后台正在理解这条记录。";
     renderCapture(
@@ -212,21 +222,22 @@ function renderRecommendation(result) {
 }
 
 async function sendFeedback(eventType) {
-  if (!activeSessionId || !currentTargetId || feedbackPending) return;
+  if (!activeSessionId || !currentTargetId || feedbackPending || decisionPending) return;
   feedbackPending = true;
   const targetId = currentTargetId;
   try {
-    await request("/v1/now/sessions/" + activeSessionId + "/feedback", {
-      method: "POST",
-      headers: { "X-Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ clientEventId: crypto.randomUUID(), eventType }),
-    });
+    if (feedbackAttempt && feedbackAttempt.eventType !== eventType)
+      throw new Error("上次反馈尚未确认，请先重试原来的选择。");
+    feedbackAttempt ??= { clientEventId: crypto.randomUUID(), eventType };
+    await recordFeedback("/v1/now/sessions/" + activeSessionId + "/feedback", feedbackAttempt);
+    feedbackAttempt = null;
+    activeSessionId = currentTargetId = null;
+    byId("recommendation").replaceChildren();
     if (eventType === "ACCEPT") {
-      byId("recommendation").replaceChildren();
       addText(byId("recommendation"), "p", "记下了，按自己的节奏开始吧。", "quiet-note");
     } else {
       excludedObjectIds.add(targetId);
-      await getRecommendation([...excludedObjectIds].slice(-100));
+      await getRecommendation();
     }
   } catch (error) {
     addText(byId("recommendation"), "p", error.message, "error-note");
@@ -235,28 +246,36 @@ async function sendFeedback(eventType) {
   }
 }
 
-async function getRecommendation(excludeObjectIds = []) {
-  const context = {};
-  const minutes = byId("minutes").value;
-  const mood = byId("mood").value;
-  if (minutes) context.availableMinutes = Number(minutes);
-  if (mood) context.mood = mood;
-  context.willingToGoOut = byId("go-out").checked;
-  const result = await request("/v1/now/sessions", {
-    method: "POST",
-    headers: { "X-Idempotency-Key": crypto.randomUUID() },
-    body: JSON.stringify({ context, excludeObjectIds }),
-  });
-  renderRecommendation(result);
+async function getRecommendation() {
+  if (decisionPending) return;
+  if (feedbackAttempt) throw new Error("上次反馈尚未确认，请先重试原来的选择。");
+  decisionPending = true;
+  const button = byId("context-form").querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const context = {};
+    const minutes = byId("minutes").value;
+    const mood = byId("mood").value;
+    if (minutes) context.availableMinutes = Number(minutes);
+    if (mood) context.mood = mood;
+    context.willingToGoOut = byId("go-out").checked;
+    const result = await createDecision("/v1/now/sessions", {
+      context,
+      excludeObjectIds: [...excludedObjectIds].slice(-100),
+    });
+    renderRecommendation(result);
+  } finally {
+    decisionPending = false;
+    button.disabled = false;
+  }
 }
 
 byId("context-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  excludedObjectIds.clear();
   try {
     await getRecommendation();
   } catch (error) {
-    byId("recommendation").replaceChildren();
+    if (!feedbackAttempt) byId("recommendation").replaceChildren();
     addText(byId("recommendation"), "p", error.message, "error-note");
   }
 });

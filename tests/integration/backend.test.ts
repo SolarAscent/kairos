@@ -5,12 +5,15 @@ import { migrate } from "../../packages/db/dist/migrations.js";
 import { createApiApp } from "../../apps/api/dist/bootstrap.js";
 import { OutboxWorker } from "../../apps/worker/dist/worker.js";
 import { MockModelProvider } from "@life/agent-core";
+import { ApiClient, type ClientPlatform } from "../../apps/miniprogram/src/lib/client";
 import {
   captureAcceptedSchema,
   captureResponseSchema,
   nowResponseSchema,
   authResponseSchema,
   feedbackAcceptedSchema,
+  lifeListResponseSchema,
+  captureListResponseSchema,
 } from "@life/contracts";
 
 const testUrl = process.env.TEST_DATABASE_URL;
@@ -18,7 +21,8 @@ if (!testUrl) throw new Error("Set TEST_DATABASE_URL to a disposable local Postg
 const schema = "review_" + randomUUID().replaceAll("-", "");
 const admin = createDatabase(testUrl);
 const scopedUrl = new URL(testUrl);
-scopedUrl.searchParams.set("options", `-c search_path=${schema},public`);
+// Never fall back to pre-existing public tables when a test removes a relation.
+scopedUrl.searchParams.set("options", `-c search_path=${schema}`);
 const source = createDatabase(scopedUrl.toString());
 const pool = source.pool;
 const model = new MockModelProvider();
@@ -76,6 +80,89 @@ afterAll(async () => {
 });
 
 describe("PostgreSQL + HTTP + Worker", () => {
+  it("runs native client login, lost-write replay, parsing, decision, feedback and logout", async () => {
+    const storage = new Map<string, unknown>();
+    let loseCaptureResponse = true;
+    const platform: ClientPlatform = {
+      send: async (input) => {
+        const url = new URL(input.url);
+        const response = await app.inject({
+          method: input.method,
+          url: url.pathname,
+          headers: input.headers,
+          ...(input.data ? { payload: input.data as object } : {}),
+        });
+        if (url.pathname === "/v1/captures" && input.method === "POST" && loseCaptureResponse) {
+          loseCaptureResponse = false;
+          throw new Error("Simulated response loss after server commit");
+        }
+        return { status: response.statusCode, body: response.json() };
+      },
+      login: async () => randomUUID(),
+      uuid: async () => randomUUID(),
+      read: (key) => storage.get(key),
+      write: (key, value) => {
+        storage.set(key, value);
+      },
+      remove: (key) => {
+        storage.delete(key);
+      },
+      envVersion: () => "develop",
+      sdkVersion: () => "3.7.1",
+    };
+    const client = new ApiClient(
+      {
+        environment: "develop",
+        appId: "touristappid",
+        apiBaseUrl: "http://local.test",
+        loginMode: "mock",
+        appVersion: "0.2.0",
+      },
+      platform,
+    );
+    await client.login();
+    const key = randomUUID();
+    const options = {
+      method: "POST" as const,
+      data: { type: "TEXT", text: "想读那本书", sourceChannel: "MINIPROGRAM" },
+      key,
+    };
+    await expect(
+      client.request("/v1/captures", captureAcceptedSchema, options),
+    ).rejects.toMatchObject({ code: "NETWORK_UNAVAILABLE" });
+    const receipt = await client.request("/v1/captures", captureAcceptedSchema, options);
+    expect(receipt.replayed).toBe(true);
+    expect(await client.request("/v1/captures", captureListResponseSchema)).toHaveLength(1);
+    await worker.processNext();
+    const life = await client.request("/v1/life", lifeListResponseSchema);
+    expect(life).toHaveLength(1);
+    const decision = await client.request("/v1/now/sessions", nowResponseSchema, {
+      method: "POST",
+      key: randomUUID(),
+      data: { context: { availableMinutes: 15 } },
+    });
+    expect(decision.status).toBe("RECOMMENDED");
+    await client.request(
+      `/v1/now/sessions/${decision.sessionId}/feedback`,
+      feedbackAcceptedSchema,
+      {
+        method: "POST",
+        key: randomUUID(),
+        data: { clientEventId: randomUUID(), eventType: "ACCEPT" },
+      },
+    );
+    await worker.processNext();
+    const sessions = await pool.query(
+      "SELECT id FROM auth_sessions WHERE user_id=$1 AND revoked_at IS NULL",
+      [client.userId],
+    );
+    await client.logout();
+    expect(client.userId).toBeNull();
+    expect(
+      (await pool.query("SELECT revoked_at FROM auth_sessions WHERE id=$1", [sessions.rows[0].id]))
+        .rows[0].revoked_at,
+    ).not.toBeNull();
+  });
   it("migrates twice and returns live readiness", async () => {
     expect(
       (await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows,

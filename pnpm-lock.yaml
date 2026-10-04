@@ -105,9 +105,37 @@ importers:
 
   apps/demo:
     devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
       vite:
         specifier: ^7.1.5
         version: 7.3.6(@types/node@22.20.5)(tsx@4.23.15)
+
+  apps/miniprogram:
+    dependencies:
+      '@life/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      mobx-miniprogram:
+        specifier: ^6.12.3
+        version: 6.12.3
+      mobx-miniprogram-bindings:
+        specifier: ^5.0.0
+        version: 5.1.1(miniprogram-api-typings@4.1.3)(mobx-miniprogram@6.12.3)
+      zod:
+        specifier: ^4.1.5
+        version: 4.6.5
+    devDependencies:
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
+      miniprogram-api-typings:
+        specifier: ^4.0.0
+        version: 4.1.3
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   apps/worker:
     dependencies:
@@ -1305,6 +1333,18 @@ packages:
     resolution: {integrity: sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==}
     engines: {node: '>=16 || 14 >=14.17'}
 
+  miniprogram-api-typings@4.1.3:
+    resolution: {integrity: sha512-5mobiXzDS3KFJMM20cIg5m7hiFSJY0YGpgm5yzFeIJ+UP15RGOtW/ztqAhRfOQIvPBD0WyYB+WFCWaeeTTEZTQ==}
+
+  mobx-miniprogram-bindings@5.1.1:
+    resolution: {integrity: sha512-mWUST+SEkzOlOIaNCh5rlmpNirl+WKOAYifwfRUn8vpWUenCOyfi2Q7Z8bi+ydlAh/L6r1rmtFq8ot5zjeb1Yw==}
+    peerDependencies:
+      miniprogram-api-typings: ^4.0.1
+      mobx-miniprogram: ^6.0.0
+
+  mobx-miniprogram@6.12.3:
+    resolution: {integrity: sha512-GEq1EG7jZPnrHYV43oppa6jY9lgbNRuGPiXyOFRoluHjd5LIGBf3a+zXMjzO1AVwrFOWvVRazxtzfiRXMUUqZw==}
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -2448,6 +2488,15 @@ snapshots:
       brace-expansion: 5.0.12
 
   minipass@7.1.3: {}
+
+  miniprogram-api-typings@4.1.3: {}
+
+  mobx-miniprogram-bindings@5.1.1(miniprogram-api-typings@4.1.3)(mobx-miniprogram@6.12.3):
+    dependencies:
+      miniprogram-api-typings: 4.1.3
+      mobx-miniprogram: 6.12.3
+
+  mobx-miniprogram@6.12.3: {}
 
   ms@2.1.3: {}
 

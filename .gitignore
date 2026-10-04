@@ -7,3 +7,6 @@ dist
 coverage
 apps/miniprogram/miniprogram_npm
 .local
+apps/miniprogram/config.local.json
+**/project.private.config.json
+*.private.key

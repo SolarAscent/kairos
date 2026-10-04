@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  ServiceUnavailableException,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
@@ -13,6 +7,7 @@ import type { LoginRequest, RefreshRequest } from "@life/contracts";
 import { DATABASE } from "../common/tokens.js";
 import { readAuthConfig } from "../common/auth-config.js";
 import { createAccessToken } from "../common/security.js";
+import { resolveWechatCode } from "./wechat.provider.js";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -20,32 +15,8 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest("hex
 export class AuthService {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
-  private async resolveWechatCode(code: string): Promise<{ openId: string; unionId?: string }> {
-    const mockEnabled = process.env.WECHAT_MOCK_LOGIN === "true";
-    if (mockEnabled && process.env.NODE_ENV !== "production")
-      return { openId: "local-demo:" + code };
-    if (!process.env.WECHAT_APP_ID || !process.env.WECHAT_APP_SECRET)
-      throw new ServiceUnavailableException({ code: "WECHAT_LOGIN_NOT_CONFIGURED" });
-    const url = new URL("https://api.weixin.qq.com/sns/jscode2session");
-    url.searchParams.set("appid", process.env.WECHAT_APP_ID);
-    url.searchParams.set("secret", process.env.WECHAT_APP_SECRET);
-    url.searchParams.set("js_code", code);
-    url.searchParams.set("grant_type", "authorization_code");
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok)
-      throw new ServiceUnavailableException({ code: "WECHAT_PROVIDER_UNAVAILABLE" });
-    const payload = (await response.json()) as {
-      openid?: string;
-      unionid?: string;
-      errcode?: number;
-    };
-    if (!payload.openid || payload.errcode)
-      throw new BadRequestException({ code: "WECHAT_CODE_INVALID" });
-    return { openId: payload.openid, unionId: payload.unionid };
-  }
-
   async login(input: LoginRequest) {
-    const identity = await this.resolveWechatCode(input.code);
+    const identity = await resolveWechatCode(input.code);
     const sessionId = uuidv7();
     const refreshToken = randomBytes(48).toString("base64url");
     const days = readAuthConfig().REFRESH_TOKEN_TTL_DAYS;

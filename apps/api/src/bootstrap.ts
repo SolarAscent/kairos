@@ -8,11 +8,10 @@ import { readAuthConfig } from "./common/auth-config.js";
 import type { ApiRequest } from "./common/http.js";
 import { AppModule } from "./app.module.js";
 import { HttpExceptionFilter } from "./common/http-exception.filter.js";
+import { checkWechatConfig } from "./auth/wechat.provider.js";
 
 export async function createApiApp(): Promise<NestFastifyApplication> {
-  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL_REQUIRED");
-  if (process.env.NODE_ENV === "production" && process.env.WECHAT_MOCK_LOGIN === "true")
-    throw new Error("MOCK_LOGIN_FORBIDDEN_IN_PRODUCTION");
+  checkWechatConfig();
   readAuthConfig();
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
@@ -39,7 +38,7 @@ export async function createApiApp(): Promise<NestFastifyApplication> {
   const config = new DocumentBuilder()
     .setTitle("Life Decision API")
     .setDescription("Capture → Life → Context → Action")
-    .setVersion("0.1.0")
+    .setVersion("0.2.0")
     .addBearerAuth()
     .build();
   const document = SwaggerModule.createDocument(app, config);

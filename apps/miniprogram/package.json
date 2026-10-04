@@ -1,0 +1,22 @@
+{
+  "name": "@life/miniprogram",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/build.mjs --check"
+  },
+  "dependencies": {
+    "@life/contracts": "workspace:*",
+    "mobx-miniprogram": "^6.12.3",
+    "mobx-miniprogram-bindings": "^5.0.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "miniprogram-api-typings": "^4.0.0",
+    "typescript": "^5.9.2"
+  }
+}

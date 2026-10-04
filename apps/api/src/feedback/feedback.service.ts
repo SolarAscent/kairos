@@ -81,7 +81,6 @@ export class FeedbackService {
           aggregateId: feedbackId,
           eventType: "FEEDBACK_RECORDED",
           payload: { feedbackId, userId, candidateId: recommendation.candidateId, traceId },
-          status: "PENDING",
         });
         return { feedbackId, eventType: input.eventType, replayedClientEvent: false };
       },

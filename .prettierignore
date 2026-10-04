@@ -5,3 +5,6 @@ pnpm-lock.yaml
 coverage
 .local
 *.sql
+**/*.wxml
+**/*.wxss
+apps/miniprogram/config.local.json

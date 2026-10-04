@@ -1,6 +1,7 @@
 import { Controller, Get, Inject, Param, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { uuidSchema } from "@life/contracts";
+import { uuidSchema, lifeListResponseSchema } from "@life/contracts";
+import { ApiContract } from "../common/api-contract.js";
 import { ApiRequest, CurrentUser, parseBody, success } from "../common/http.js";
 import { AuthGuard, type AuthenticatedUser } from "../common/security.js";
 import { LifeService } from "./life.service.js";
@@ -12,6 +13,7 @@ import { LifeService } from "./life.service.js";
 export class LifeController {
   constructor(@Inject(LifeService) private readonly life: LifeService) {}
   @Get()
+  @ApiContract(lifeListResponseSchema)
   async list(@CurrentUser() user: AuthenticatedUser, @Req() request: ApiRequest) {
     return success(request, await this.life.list(user.id));
   }
