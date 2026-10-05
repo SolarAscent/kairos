@@ -26,11 +26,15 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "uuid": "^11.1.0",
-    "zod": "^4.1.5"
+    "zod": "^4.1.5",
+    "@life/agent-core": "workspace:*",
+    "ws": "^8.18.3",
+    "@life/integrations": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "^8.15.5",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "@types/ws": "^8.18.1"
   }
 }

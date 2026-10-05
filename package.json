@@ -29,6 +29,9 @@
     "@life/domain": "workspace:*",
     "@life/agent-core": "workspace:*",
     "@life/db": "workspace:*",
-    "zod": "^4.1.5"
+    "zod": "^4.1.5",
+    "ws": "^8.18.3",
+    "@types/ws": "^8.18.1",
+    "@life/integrations": "workspace:*"
   }
 }

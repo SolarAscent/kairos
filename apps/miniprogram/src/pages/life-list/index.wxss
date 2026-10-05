@@ -1,3 +1,4 @@
+@import "../../lib/life-stack.wxss";
 .list-screen { height: 100vh; display: flex; flex-direction: column; }
 .list-header { display: flex; align-items: center; justify-content: space-between; padding: 0 40rpx; }
 .back, .refresh { font-size: 27rpx; color: #72827B; line-height: 64rpx; padding: 0 12rpx; }
@@ -16,3 +17,6 @@
 .list-status, .empty-list { color: #72827B; text-align: center; font-size: 26rpx; line-height: 1.9; padding: 32rpx 0; }
 .more { color: #233C35; background: #DEE7DF; border-radius: 40rpx; line-height: 80rpx; font-size: 27rpx; margin: 20rpx 0; }
 .list-error { color: #925344; font-size: 26rpx; line-height: 1.8; margin: 0 48rpx 20rpx; }
+
+.refresh { margin: 0 !important; width: 64rpx !important; height: 64rpx; font-size: 44rpx; line-height: 60rpx; border-radius: 50%; }
+.refresh-pressed { background: #DEE7DF; }

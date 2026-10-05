@@ -37,7 +37,9 @@ describe("recommendation constraints", () => {
     [{ costMinMinor: 2000 }, { budgetMinor: 1000 }, "BUDGET_LIMIT"],
     [{ kind: "PLACE" }, { willingToGoOut: false }, "NOT_GOING_OUT"],
   ])("filters proven hard constraints", (overrides, context, reason) => {
-    const [result] = scoreCandidates([{ ...candidate, ...overrides }], context, now);
+    const result = scoreCandidates([{ ...candidate, ...overrides }], context, now).find((item) =>
+      item.actionKey.endsWith(":DO"),
+    );
     expect(result?.hardFilterReason).toBe(reason);
     expect(result?.rank).toBeNull();
   });
@@ -46,14 +48,18 @@ describe("recommendation constraints", () => {
       { ...candidate, id: "b" },
       { ...candidate, id: "a" },
     ];
-    expect(scoreCandidates(inputs, {}, now).map((item) => item.id)).toEqual(["a", "b"]);
+    expect(
+      scoreCandidates(inputs, {}, now)
+        .filter((item) => item.hardFilterReason == null)
+        .map((item) => item.id),
+    ).toEqual(["a", "b"]);
     expect(inputs[0]?.id).toBe("b");
   });
-  it("ignores impressions and records rejection reasons separately", () => {
+  it("ignores impressions and situational skips, and learns explicit dislike", () => {
     expect(derivePreferenceSignal("IMPRESSION", "VIEW_CONTENT")).toBeNull();
-    expect(derivePreferenceSignal("REJECT", "VIEW_CONTENT", "TOO_FAR")?.dimension).toBe(
-      "rejection_reason",
-    );
+    expect(derivePreferenceSignal("SKIP", "VIEW_CONTENT")).toBeNull();
+    expect(derivePreferenceSignal("REJECT", "VIEW_CONTENT", "TOO_FAR")).toBeNull();
+    expect(derivePreferenceSignal("REJECT", "VIEW_CONTENT", "DISLIKE")?.polarity).toBe(-1);
   });
 });
 
@@ -78,13 +84,14 @@ describe("contracts and model boundary", () => {
     result.objects[0]!.facets[0]!.source = "VERIFIED" as never;
     expect(captureParseResultSchema.safeParse(result).success).toBe(false);
   });
-  it("derives closed, fully-required JSON Schema from Zod", () => {
+  it("derives closed JSON Schema with mandatory extraction fields and optional life facts", () => {
     function inspect(value: unknown) {
       if (!value || typeof value !== "object") return;
       const node = value as Record<string, unknown>;
       if (node.type === "object") {
         expect(node.additionalProperties).toBe(false);
-        expect(node.required).toEqual(Object.keys(node.properties as object));
+        for (const key of (node.required as string[] | undefined) ?? [])
+          expect(node.properties).toHaveProperty(key);
       }
       Object.values(node).forEach(inspect);
     }

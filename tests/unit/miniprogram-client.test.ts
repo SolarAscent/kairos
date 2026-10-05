@@ -95,6 +95,51 @@ describe("native client sessions and network recovery", () => {
     expect(writes[0].data).toEqual(writes[1].data);
     expect(writes[0].headers["x-platform"]).toBe("MINIPROGRAM");
   });
+  it("sends an empty JSON DELETE with the same idempotency key after a token refresh", async () => {
+    const writes: any[] = [];
+    const id = randomUUID();
+    const { client } = setup(async (input) => {
+      if (input.url.endsWith("/login")) return ok(token());
+      if (input.url.endsWith("/refresh")) return ok(token(2));
+      writes.push(input);
+      return writes.length === 1 ? denied() : ok({ id, deleted: true, replayed: false });
+    });
+    await client.login();
+    const key = randomUUID();
+    await client.request(
+      `/v1/life/${id}`,
+      z.object({ id: z.string(), deleted: z.literal(true), replayed: z.boolean() }),
+      { method: "DELETE", key },
+    );
+    expect(writes).toHaveLength(2);
+    expect(writes.map((input) => input.method)).toEqual(["DELETE", "DELETE"]);
+    expect(writes.map((input) => input.headers["X-Idempotency-Key"])).toEqual([key, key]);
+    expect(writes.map((input) => input.data)).toEqual([{}, {}]);
+    expect(writes[1].headers.authorization).toBe("Bearer access-2");
+  });
+  it("requires an operation key for deletion and discards a late delete response after logout", async () => {
+    const response = deferred<ReturnType<typeof ok>>();
+    const entered = deferred<void>();
+    const { client, platform } = setup(async (input) => {
+      if (input.url.endsWith("/login")) return ok(token());
+      entered.resolve();
+      return response.promise;
+    });
+    await client.login();
+    const schema = z.object({ deleted: z.literal(true) });
+    await expect(
+      client.request("/v1/life/item", schema, { method: "DELETE" }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REQUIRED" });
+    expect(platform.send).toHaveBeenCalledTimes(1);
+    const deletion = client.request("/v1/life/item", schema, {
+      method: "DELETE",
+      key: randomUUID(),
+    });
+    await entered.promise;
+    client.clear();
+    response.resolve(ok({ deleted: true }));
+    await expect(deletion).rejects.toMatchObject({ code: "SESSION_CHANGED" });
+  });
   it("drops ambiguous refresh credentials and requires an explicit new login", async () => {
     let refreshes = 0;
     const { client } = setup(async (input) => {

@@ -1,10 +1,14 @@
+import { rebuildLifeFacts } from "./life-facts-rebuild.js";
+import { enrichPlaceLocation, enqueuePlaceLocationEnrichment } from "./life-location-enrich.js";
+import { TencentLbsAdapter, type LocationProvider } from "@life/integrations";
+import { performance } from "node:perf_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Pool, PoolClient } from "pg";
 import { v7 as uuidv7 } from "uuid";
-import type { ModelGateway } from "@life/agent-core";
+import type { ModelGateway, ModelCaptureInput } from "@life/agent-core";
 import { captureParseResultSchema, uuidSchema, type CaptureParseResult } from "@life/contracts";
-import { derivePreferenceSignal } from "@life/domain";
+import { derivePreferenceSignal, buildLifeProjection } from "@life/domain";
 import { z } from "zod";
 
 const captureEventSchema = z.object({
@@ -18,8 +22,21 @@ const feedbackEventSchema = z.object({
   candidateId: uuidSchema,
   traceId: uuidSchema.optional(),
 });
-type ClaimedEvent = { id: string; event_type: string; payload: unknown; attempts: number };
-type Capture = { text_content: string | null; status: string; deleted_at: Date | null };
+type ClaimedEvent = {
+  id: string;
+  event_type: string;
+  payload: unknown;
+  attempts: number;
+  created_at: Date;
+};
+type Capture = {
+  capture_type?: string;
+  text_content: string | null;
+  status: string;
+  deleted_at: Date | null;
+  created_at?: Date;
+  timezone?: string;
+};
 
 export class OutboxWorker {
   readonly workerId = `${hostname()}:${randomUUID()}`;
@@ -27,31 +44,57 @@ export class OutboxWorker {
   constructor(
     private readonly pool: Pool,
     private readonly gateway: ModelGateway,
+    private readonly locations: LocationProvider = TencentLbsAdapter.fromEnvironment(),
   ) {}
 
-  async processNext(): Promise<boolean> {
+  async processNext(allowFactsRebuild = true): Promise<boolean> {
     const {
       rows: [event],
     } = await this.pool.query<ClaimedEvent>(
       `
       WITH candidate AS (
-        SELECT id FROM outbox_events
-        WHERE (status IN ('PENDING', 'RETRY') AND available_at <= now())
-           OR (status = 'PROCESSING' AND locked_at < now() - interval '2 minutes')
-        ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+        SELECT queued.id FROM outbox_events queued
+        WHERE ((queued.status IN ('PENDING', 'RETRY') AND queued.available_at <= now())
+           OR (queued.status = 'PROCESSING' AND queued.locked_at < now() - interval '2 minutes'))
+          AND ($2::boolean OR queued.event_type NOT IN ('LIFE_FACTS_REBUILD','PLACE_LOCATION_ENRICH'))
+          AND (queued.event_type<>'CAPTURE_CREATED' OR NOT EXISTS (
+            SELECT 1 FROM outbox_events active
+            WHERE active.aggregate_type=queued.aggregate_type AND active.aggregate_id=queued.aggregate_id
+              AND active.id<>queued.id AND active.status='PROCESSING'
+              AND active.locked_at>now()-interval '2 minutes'
+          ))
+        ORDER BY CASE WHEN queued.event_type IN ('LIFE_FACTS_REBUILD','PLACE_LOCATION_ENRICH') THEN 1 ELSE 0 END,queued.created_at,queued.id FOR UPDATE OF queued SKIP LOCKED LIMIT 1
       ) UPDATE outbox_events AS event
         SET status = 'PROCESSING', locked_at = now(), locked_by = $1, attempts = event.attempts + 1
         FROM candidate WHERE event.id = candidate.id
-        RETURNING event.id, event.event_type, event.payload, event.attempts`,
-      [this.workerId],
+        RETURNING event.id, event.event_type, event.payload, event.attempts, event.created_at`,
+      [this.workerId, allowFactsRebuild],
     );
     if (!event) return false;
     try {
       if (event.event_type === "CAPTURE_CREATED") await this.processCapture(event);
+      else if (event.event_type === "LIFE_FACTS_REBUILD")
+        await rebuildLifeFacts(
+          event,
+          this.gateway,
+          (operation) => this.withEvent(event, operation),
+          (client) => this.finish(client, event.id),
+        );
       else if (event.event_type === "FEEDBACK_RECORDED") await this.processFeedback(event);
+      else if (event.event_type === "PLACE_LOCATION_ENRICH")
+        await enrichPlaceLocation(
+          event,
+          this.locations,
+          (operation) => this.withEvent(event, operation),
+          (client) => this.finish(client, event.id),
+        );
       else throw new Error("UNKNOWN_EVENT_TYPE");
-    } catch {
-      await this.failEvent(event);
+    } catch (error) {
+      await this.failEvent(
+        event,
+        error instanceof Error &&
+          ["MODEL_CONFIGURATION_MISSING", "MODEL_IMAGE_UNSUPPORTED"].includes(error.message),
+      );
       console.error(
         JSON.stringify({
           level: "error",
@@ -99,45 +142,95 @@ export class OutboxWorker {
 
   private async processCapture(event: ClaimedEvent) {
     const payload = captureEventSchema.parse(event.payload);
-    const text = await this.withEvent(event, async (client) => {
-      const {
-        rows: [capture],
-      } = await client.query<Capture>(
-        "SELECT text_content,status,deleted_at FROM captures WHERE id=$1 AND user_id=$2 FOR UPDATE",
-        [payload.captureId, payload.userId],
-      );
-      if (
-        !capture ||
-        capture.deleted_at ||
-        ["DELETED", "READY", "NEEDS_REVIEW"].includes(capture.status)
-      ) {
-        await this.finish(client, event.id);
-        return undefined;
-      }
-      if (!capture.text_content) throw new Error("CAPTURE_TEXT_EMPTY");
-      await client.query(
-        "UPDATE captures SET status='PROCESSING',updated_at=now() WHERE id=$1 AND user_id=$2",
-        [payload.captureId, payload.userId],
-      );
-      return capture.text_content;
-    });
-    if (text === undefined) return;
+    const input = await this.withEvent(
+      event,
+      async (client): Promise<ModelCaptureInput | undefined> => {
+        const {
+          rows: [capture],
+        } = await client.query<Capture>(
+          "SELECT c.capture_type,c.text_content,c.status,c.deleted_at,c.created_at,u.timezone FROM captures c JOIN users u ON u.id=c.user_id WHERE c.id=$1 AND c.user_id=$2 FOR UPDATE OF c",
+          [payload.captureId, payload.userId],
+        );
+        if (
+          !capture ||
+          capture.deleted_at ||
+          ["DELETED", "READY", "NEEDS_REVIEW"].includes(capture.status)
+        ) {
+          await this.finish(client, event.id);
+          return undefined;
+        }
+        if (capture.status === "PROCESSING") {
+          // The capture row lock serializes this check with another claimant.
+          // Defer a duplicate while a fresh sibling lease is parsing the same input.
+          const other = await client.query(
+            `SELECT id FROM outbox_events WHERE aggregate_type='CAPTURE' AND aggregate_id=$1
+              AND id<>$2 AND status='PROCESSING' AND locked_at>now()-interval '2 minutes' LIMIT 1`,
+            [payload.captureId, event.id],
+          );
+          if (other.rowCount) {
+            await client.query(
+              `UPDATE outbox_events SET status='RETRY',available_at=now()+interval '250 milliseconds',
+                locked_at=NULL,locked_by=NULL WHERE id=$1`,
+              [event.id],
+            );
+            return undefined;
+          }
+        }
+        let image: ModelCaptureInput["image"];
+        if (capture.capture_type === "IMAGE") {
+          const {
+            rows: [asset],
+          } = await client.query<{ storage_key: string; mime_type: string }>(
+            "SELECT storage_key,mime_type FROM capture_assets WHERE capture_id=$1 AND user_id=$2 AND asset_type='IMAGE' AND deleted_at IS NULL LIMIT 1",
+            [payload.captureId, payload.userId],
+          );
+          const match = asset?.storage_key.match(
+            /^data:(image\/jpeg|image\/png);base64,([A-Za-z0-9+/=]+)$/,
+          );
+          if (!match || asset!.storage_key.length > 3 * 1024 * 1024)
+            throw new Error("CAPTURE_IMAGE_INVALID");
+          image = { mimeType: match[1] as "image/jpeg" | "image/png", base64: match[2]! };
+        } else if (!capture.text_content) throw new Error("CAPTURE_TEXT_EMPTY");
+        await client.query(
+          "UPDATE captures SET status='PROCESSING',updated_at=now() WHERE id=$1 AND user_id=$2",
+          [payload.captureId, payload.userId],
+        );
+        return {
+          text: capture.text_content ?? "",
+          referenceTime: capture.created_at!.toISOString(),
+          timezone: capture.timezone!,
+          ...(image ? { image } : {}),
+        };
+      },
+    );
+    if (input === undefined) return;
     const startedAt = new Date();
+    const modelStarted = performance.now();
+    let modelLatencyMs: number;
     let result: CaptureParseResult;
     try {
-      result = captureParseResultSchema.parse(await this.gateway.parseCapture(text));
+      result = captureParseResultSchema.parse(await this.gateway.parseCapture(input));
     } catch (error) {
       await this.withEvent(event, (client) =>
-        this.recordModelCall(client, event, payload, text, startedAt, null),
+        this.recordModelCall(
+          client,
+          event,
+          payload,
+          input,
+          startedAt,
+          null,
+          Math.round(performance.now() - modelStarted),
+        ),
       );
       throw error;
     }
+    modelLatencyMs = Math.round(performance.now() - modelStarted);
     await this.withEvent(event, async (client) => {
       // Re-read after the provider call: deletion or another event may have won.
       const {
         rows: [capture],
       } = await client.query<Capture>(
-        "SELECT text_content,status,deleted_at FROM captures WHERE id=$1 AND user_id=$2 FOR UPDATE",
+        "SELECT capture_type,text_content,status,deleted_at FROM captures WHERE id=$1 AND user_id=$2 FOR UPDATE",
         [payload.captureId, payload.userId],
       );
       if (
@@ -149,18 +242,37 @@ export class OutboxWorker {
         return;
       }
       const objectIds: string[] = [];
+      const destinations: Parameters<typeof enqueuePlaceLocationEnrichment>[1] = [];
       for (const object of result.objects) {
+        const projection = buildLifeProjection(object, {
+          referenceTime: input.referenceTime!,
+          timezone: input.timezone!,
+          ...(!input.image ? { sourceText: input.text } : {}),
+        });
         const objectId = uuidv7();
         objectIds.push(objectId);
+        destinations.push({
+          id: objectId,
+          userId: payload.userId,
+          title: object.title,
+          kind: object.kind,
+          objectVersion: 1,
+          facets: projection.facets.map((facet) => ({
+            facetType: facet.type,
+            facetKey: facet.key,
+            originType: facet.data.facts?.origin ?? facet.source,
+            data: facet.data,
+          })),
+        });
         await client.query(
           `INSERT INTO life_objects(id,user_id,title,summary,status,kind,importance_score)
           VALUES($1,$2,$3,$4,'ACTIVE',$5,$6)`,
           [objectId, payload.userId, object.title, object.summary, object.kind, object.importance],
         );
-        for (const facet of object.facets) {
+        for (const facet of projection.facets) {
           await client.query(
             `INSERT INTO life_object_facets(id,user_id,life_object_id,facet_type,facet_key,schema_version,data,confidence,origin_type,origin_id)
-            VALUES($1,$2,$3,$4,$5,2,$6::jsonb,$7,$8,$9)`,
+            VALUES($1,$2,$3,$4,$5,3,$6::jsonb,$7,$8,$9)`,
             [
               uuidv7(),
               payload.userId,
@@ -169,7 +281,7 @@ export class OutboxWorker {
               facet.key,
               JSON.stringify(facet.data),
               facet.confidence,
-              facet.source,
+              facet.data.facts?.origin ?? facet.source,
               payload.captureId,
             ],
           );
@@ -187,18 +299,36 @@ export class OutboxWorker {
           ],
         );
         await client.query(
-          `INSERT INTO life_object_projection(life_object_id,user_id,display_kind,importance_score,desire_score,search_text,projection_version)
-          VALUES($1,$2,$3,$4,$5,$6,'projection-v0.2')`,
+          `INSERT INTO life_object_projection(life_object_id,user_id,display_kind,importance_score,desire_score,search_text,projection_version,
+            next_at,expires_at,cost_min_minor,cost_max_minor,currency,duration_min_seconds,duration_max_seconds,latitude,longitude,coordinate_system)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [
             objectId,
             payload.userId,
             object.kind,
             object.importance,
             object.kind === "DESIRE" ? object.importance : null,
-            [object.title, object.summary].filter(Boolean).join(" "),
+            projection.searchText,
+            projection.projectionVersion,
+            projection.nextAt,
+            projection.expiresAt,
+            projection.costMinMinor,
+            projection.costMaxMinor,
+            projection.currency,
+            projection.durationMinSeconds,
+            projection.durationMaxSeconds,
+            projection.latitude,
+            projection.longitude,
+            projection.coordinateSystem,
           ],
         );
       }
+      await enqueuePlaceLocationEnrichment(
+        client,
+        destinations,
+        this.locations.configured,
+        payload.traceId,
+      );
       for (const relation of result.relations) {
         await client.query(
           `INSERT INTO life_object_relations(id,user_id,from_object_id,relation_type,to_object_id,confidence,origin_type,origin_id)
@@ -214,15 +344,13 @@ export class OutboxWorker {
           ],
         );
       }
-      const needsReview =
-        !result.objects.length ||
-        result.uncertainFields.length > 0 ||
-        result.objects.some((object) => object.uncertainFields.length > 0);
+      // Passive capture never executes an action. Missing dates or weak inference
+      // remain in the model audit; they do not block an already-saved note.
       await client.query(
-        "UPDATE captures SET status=$1,pipeline_version='capture-v0.2',updated_at=now() WHERE id=$2 AND user_id=$3",
-        [needsReview ? "NEEDS_REVIEW" : "READY", payload.captureId, payload.userId],
+        "UPDATE captures SET status=$1,pipeline_version='capture-v0.4',updated_at=now() WHERE id=$2 AND user_id=$3",
+        ["READY", payload.captureId, payload.userId],
       );
-      await this.recordModelCall(client, event, payload, text, startedAt, result);
+      await this.recordModelCall(client, event, payload, input, startedAt, result, modelLatencyMs);
       await client.query(
         `INSERT INTO audit_events(id,actor_type,action,target_type,target_id,metadata,trace_id)
         VALUES($1,'WORKER','CAPTURE_PARSED','CAPTURE',$2,$3::jsonb,$4)`,
@@ -241,14 +369,15 @@ export class OutboxWorker {
     client: PoolClient,
     event: ClaimedEvent,
     payload: z.infer<typeof captureEventSchema>,
-    text: string,
+    input: ModelCaptureInput,
     startedAt: Date,
     result: CaptureParseResult | null,
+    modelLatencyMs: number,
   ) {
     const runId = uuidv7();
     await client.query(
-      `INSERT INTO agent_runs(id,user_id,purpose,entity_type,entity_id,pipeline_version,status,trace_id,started_at,completed_at,error_code)
-      VALUES($1,$2,'CAPTURE_PARSE','CAPTURE',$3,'capture-v0.2',$4,$5,$6,now(),$7)`,
+      `INSERT INTO agent_runs(id,user_id,purpose,entity_type,entity_id,pipeline_version,status,trace_id,started_at,completed_at,error_code,result)
+      VALUES($1,$2,'CAPTURE_PARSE','CAPTURE',$3,'capture-v0.4',$4,$5,$6,now(),$7,$8::jsonb)`,
       [
         runId,
         payload.userId,
@@ -257,20 +386,24 @@ export class OutboxWorker {
         payload.traceId ?? event.id,
         startedAt,
         result ? null : "MODEL_PARSE_FAILED",
+        JSON.stringify({
+          queueWaitMs: Math.max(0, startedAt.getTime() - event.created_at.getTime()),
+          modelLatencyMs,
+        }),
       ],
     );
     await client.query(
       `INSERT INTO model_calls(id,agent_run_id,provider,model,prompt_name,prompt_version,schema_version,input_hash,status,structured_output,latency_ms,error_code)
-      VALUES($1,$2,$3,$4,'capture.parse','0.2','0.2',$5,$6,$7::jsonb,$8,$9)`,
+      VALUES($1,$2,$3,$4,'capture.parse','0.4','0.3',$5,$6,$7::jsonb,$8,$9)`,
       [
         uuidv7(),
         runId,
         this.gateway.providerName,
-        this.gateway.modelName,
-        createHash("sha256").update(text).digest("hex"),
+        this.gateway.modelForInput?.(input) ?? this.gateway.modelName,
+        createHash("sha256").update(JSON.stringify(input)).digest("hex"),
         result ? "SUCCEEDED" : "FAILED",
         result ? JSON.stringify(result) : null,
-        Date.now() - startedAt.getTime(),
+        modelLatencyMs,
         result ? null : "MODEL_PARSE_FAILED",
       ],
     );
@@ -285,16 +418,43 @@ export class OutboxWorker {
         event_type: string;
         reason_code: string | null;
         action_type: string;
+        target_life_object_id: string | null;
+        action_payload: Record<string, unknown>;
+        execution_payload: Record<string, unknown>;
         created_at: Date;
       }>(
         `
-        SELECT f.event_type,f.reason_code,f.created_at,c.action_type FROM feedback_events f
+        SELECT f.event_type,f.reason_code,f.created_at,c.action_type,c.target_life_object_id,c.action_payload,r.execution_payload FROM feedback_events f
         JOIN recommendations r ON r.id=f.recommendation_id AND r.user_id=f.user_id
         JOIN action_candidates c ON c.id=r.action_candidate_id AND c.user_id=f.user_id
         WHERE f.id=$1 AND f.user_id=$2 AND c.id=$3`,
         [payload.feedbackId, payload.userId, payload.candidateId],
       );
       if (!feedback) throw new Error("FEEDBACK_REFERENCE_INVALID");
+      if (
+        feedback.target_life_object_id &&
+        ["ACCEPT", "EXECUTE", "COMPLETE"].includes(feedback.event_type)
+      ) {
+        await client.query(
+          `UPDATE life_objects SET last_acted_at=GREATEST(COALESCE(last_acted_at,$3),$3),updated_at=now(),
+          status=CASE WHEN $4 AND ($5::integer IS NULL OR object_version=$5) AND kind IN ('DESIRE','EVENT','OPEN_LOOP') THEN 'RESOLVED'::life_status ELSE status END
+          WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL AND status IN ('ACTIVE','RESOLVED')`,
+          [
+            feedback.target_life_object_id,
+            payload.userId,
+            feedback.created_at,
+            feedback.event_type === "COMPLETE" &&
+              feedback.action_payload.actionMode === "DO" &&
+              !String(feedback.action_payload.actionKey).endsWith(":DO:SEGMENT"),
+            feedback.execution_payload.targetObjectVersion ?? null,
+          ],
+        );
+        await client.query(
+          `UPDATE life_object_projection SET last_used_at=GREATEST(COALESCE(last_used_at,$3),$3)
+          WHERE life_object_id=$1 AND user_id=$2`,
+          [feedback.target_life_object_id, payload.userId, feedback.created_at],
+        );
+      }
       const signal = derivePreferenceSignal(
         feedback.event_type,
         feedback.action_type,
@@ -332,9 +492,9 @@ export class OutboxWorker {
     });
   }
 
-  private async failEvent(event: ClaimedEvent) {
+  private async failEvent(event: ClaimedEvent, terminal = false) {
     await this.withEvent(event, async (client) => {
-      const exhausted = event.attempts >= 8;
+      const exhausted = terminal || event.attempts >= 8;
       const backoffSeconds = Math.min(300, 2 ** (event.attempts - 1));
       await client.query(
         `UPDATE outbox_events SET status=$1,available_at=now()+$2*interval '1 second',

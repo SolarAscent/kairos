@@ -29,7 +29,60 @@ export function displayLifeItem(item: LifeBrowseItem) {
       item.distanceMeters != null
         ? `约 ${(item.distanceMeters / 1000).toFixed(1)} km · 直线距离`
         : item.hasLocation
-          ? "已记录地点"
-          : "未记录地点坐标",
+          ? "已有坐标"
+          : item.placeLabel?.trim()
+            ? `${item.placeLabel.trim()} · 待定位`
+            : item.kind === "PLACE"
+              ? "地点待补充"
+              : "",
   };
+}
+
+export type LifeStack = {
+  kind: LifeBrowseItem["kind"];
+  title: string;
+  items: ReturnType<typeof displayLifeItem>[];
+  current: number;
+  nextCursor: string | null;
+  asOf: string;
+  loading: boolean;
+  error: string;
+};
+export function createLifeStack(
+  group: {
+    kind: LifeBrowseItem["kind"];
+    title: string;
+    items: LifeBrowseItem[];
+    nextCursor: string | null;
+    asOf?: string;
+  },
+  previous?: LifeStack,
+): LifeStack {
+  const currentId = previous?.items[previous.current]?.id;
+  const currentIndex = group.items.findIndex((item) => item.id === currentId);
+  return {
+    ...group,
+    items: group.items.map(displayLifeItem),
+    current:
+      currentIndex >= 0
+        ? currentIndex
+        : Math.max(0, Math.min(previous?.current ?? 0, group.items.length - 1)),
+    asOf: group.asOf ?? "",
+    loading: false,
+    error: "",
+  };
+}
+export function groupLifeItems(items: LifeBrowseItem[], previous: LifeStack[] = []): LifeStack[] {
+  return kindOptions.flatMap((option) => {
+    if (!option.value) return [];
+    const grouped = items.filter((item) => item.kind === option.value);
+    return grouped.length
+      ? [
+          createLifeStack(
+            { kind: option.value, title: option.label, items: grouped, nextCursor: null },
+            previous.find((group) => group.kind === option.value),
+          ),
+        ]
+      : [];
+  });
 }

@@ -1,26 +1,35 @@
 <view class="list-screen" style="padding-top: {{topInset}}px; padding-bottom: {{bottomInset}}px;">
-  <view class="list-header"><button class="back" bindtap="goBack">‹ 返回</button><button class="refresh" bindtap="refresh" disabled="{{loading || locating}}">刷新</button></view>
+  <view class="list-header"><button class="back" bindtap="goBack">‹ 返回</button><button hover-class="refresh-pressed" class="refresh" bindtap="refresh" disabled="{{loading || locating}}" aria-label="更新列表">↻</button></view>
   <text class="list-title">{{title}}</text>
   <view class="filters">
     <picker range="{{timeOptions}}" value="{{timeIndex}}" bindchange="setTime" disabled="{{locating}}"><view class="filter"><text class="filter-label">留下时间</text><text>{{timeOptions[timeIndex]}} ⌄</text></view></picker>
     <picker range="{{kindOptions}}" value="{{kindIndex}}" bindchange="setKind" disabled="{{locating}}"><view class="filter"><text class="filter-label">内容类型</text><text>{{kindOptions[kindIndex]}} ⌄</text></view></picker>
     <picker range="{{locationOptions}}" value="{{locationIndex}}" bindchange="setLocation" disabled="{{locating}}"><view class="filter"><text class="filter-label">地点范围</text><text>{{locating ? '获取位置中…' : locationOptions[locationIndex] + ' ⌄'}}</text></view></picker>
   </view>
-  <text wx:if="{{locationIndex >= 3}}" class="location-note">仅筛选已有地点坐标的内容，距离为直线估算。</text>
+  <text wx:if="{{locationIndex >= 3}}" class="location-note">仅筛选已有坐标的内容，距离为直线估算。</text>
   <text wx:if="{{error}}" class="list-error">{{error}}</text>
-  <scroll-view class="list-content" scroll-y type="list" bindscrolltolower="loadMore" lower-threshold="120">
+  <scroll-view class="list-content" scroll-y="{{!stackDragging}}" type="list" bindscrolltolower="loadMore" lower-threshold="120">
     <view class="list-body">
-      <view wx:for="{{items}}" wx:key="id" class="object-card">
-        <text class="kind">{{item.kindLabel}}</text><text class="object-title">{{item.title}}</text>
-        <text wx:if="{{item.summary}}" class="summary">{{item.summary}}</text>
-        <text class="metadata">留下于 {{item.savedDate}} · {{item.locationLabel}}</text>
-        <text wx:if="{{item.nextDate}}" class="metadata">时间节点 {{item.nextDate}}</text>
-        <text wx:if="{{item.expiryDate}}" class="metadata">有效至 {{item.expiryDate}}</text>
+      <view wx:for="{{groups}}" wx:for-item="group" wx:key="kind" class="life-stack">
+        <view class="deck-heading"><text class="deck-kind">{{group.title}}</text></view>
+        <view class="deck-stage">
+          <view wx:if="{{group.items.length > 2}}" class="deck-layer deck-layer-back"></view><view wx:if="{{group.items.length > 1}}" class="deck-layer deck-layer-middle"></view>
+          <swiper class="deck-swiper" vertical duration="260" current="{{group.current}}" data-kind="{{group.kind}}" bindchange="stackChanged" bindtouchstart="stackTouchStart" bindtouchend="stackTouchEnd" bindtouchcancel="stackTouchEnd" catchtouchmove="noop">
+            <swiper-item wx:for="{{group.items}}" wx:key="id">
+              <view class="deck-card">
+                <view class="deck-copy" data-id="{{item.id}}" bindtap="viewLifeItem"><text wx:if="{{item.myRating === 'LIKE'}}" class="deck-preference">你点过喜欢</text><text class="deck-title" max-lines="3" overflow="ellipsis">{{item.title}}</text><text wx:if="{{item.summary}}" class="deck-summary" max-lines="3" overflow="ellipsis">{{item.summary}}</text></view>
+                <text class="deck-meta" max-lines="1" overflow="ellipsis">{{item.nextDate ? '时间节点 ' + item.nextDate : item.expiryDate ? '有效至 ' + item.expiryDate : '留下于 ' + item.savedDate}}{{item.locationLabel ? ' · ' + item.locationLabel : ''}}</text>
+                <view class="deck-ratings"><button class="rating-button {{item.myRating === 'LIKE' ? 'rated-like' : ''}}" data-id="{{item.id}}" data-rating="LIKE" bindtap="rateLifeItem" disabled="{{ratingBusy.length > 0}}" aria-label="{{item.myRating === 'LIKE' ? '撤回喜欢' : '喜欢'}}">👍 喜欢</button><button class="rating-button {{item.myRating === 'DISLIKE' ? 'rated-dislike' : ''}}" data-id="{{item.id}}" data-rating="DISLIKE" bindtap="rateLifeItem" disabled="{{ratingBusy.length > 0}}" aria-label="{{item.myRating === 'DISLIKE' ? '撤回不喜欢' : '不喜欢'}}">👎 不喜欢</button><text class="deck-position">{{group.current + 1}} / {{group.items.length}}{{deckView && nextCursor ? '+' : ''}}</text></view>
+              </view>
+            </swiper-item>
+          </swiper>
+        </view>
+        <view class="deck-navigation"><text class="deck-hint">{{group.current === 0 && group.items.length > 1 ? '在卡片内上下滑动' : '点正文可查看完整内容'}}</text><view class="deck-arrows"><button class="deck-arrow" data-kind="{{group.kind}}" data-step="-1" bindtap="moveStack" disabled="{{group.current === 0}}" aria-label="上一张">↑</button><button class="deck-arrow" data-kind="{{group.kind}}" data-step="1" bindtap="moveStack" disabled="{{group.current === group.items.length - 1 && !nextCursor}}" aria-label="下一张">↓</button></view></view>
       </view>
       <text wx:if="{{loaded && !items.length}}" class="empty-list">{{locationIndex >= 3 ? '这个范围内暂时没有已记录坐标的内容。可选「全部地点」查看其他记录。' : '这个筛选条件下暂无内容。试试其他时间或地点范围。'}}</text>
       <text wx:if="{{loading}}" class="list-status">正在查看…</text>
       <button wx:elif="{{nextCursor}}" class="more" bindtap="loadMore">继续查看</button>
-      <text wx:elif="{{loaded && items.length}}" class="list-status">这一组已全部展示</text>
+      <text wx:elif="{{loaded && items.length}}" class="list-status">这些卡片都已翻开</text>
       <button wx:if="{{error}}" class="more" bindtap="retry">重试</button>
     </view>
   </scroll-view>

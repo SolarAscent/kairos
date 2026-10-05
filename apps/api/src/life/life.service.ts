@@ -6,18 +6,34 @@ import {
   lifeSectionTitles,
   uuidSchema,
   type LifeSearchRequest,
+  type PatchLifeObjectRequest,
+  parsedFacetSchema,
+  facetTypeSchema,
+  structuredLifeFactsSchema,
+  type LifeRating,
+  type LifeDeckRequest,
 } from "@life/contracts";
 import {
   lifeObjectFacets,
   lifeObjectProjection,
   lifeObjectSources,
   lifeObjects,
+  outboxEvents,
+  users,
+  auditEvents,
   actionCandidates,
   feedbackEvents,
   recommendations,
+  preferenceSignals,
   type Database,
 } from "@life/db";
+import { v7 as uuidv7 } from "uuid";
+import { buildLifeProjection } from "@life/domain";
+import { verifiedDestinationForObject } from "@life/integrations";
+import { IdempotencyService } from "../common/idempotency.service.js";
 import { DATABASE } from "../common/tokens.js";
+import { PreferenceReader } from "../feedback/preference-reader.js";
+import { LifeDeckReader } from "./life-deck-reader.js";
 
 const cursorSchema = z.object({ createdAt: z.iso.datetime(), id: uuidSchema });
 const listFields = {
@@ -35,7 +51,10 @@ const hasLocation = sql<boolean>`(${lifeObjectProjection.latitude} between -90 a
 
 @Injectable()
 export class LifeService {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly db: Database,
+    @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+  ) {}
 
   async list(userId: string) {
     return this.db
@@ -62,6 +81,135 @@ export class LifeService {
       })),
     );
     return groups.filter((group) => group.items.length > 0);
+  }
+
+  async deck(userId: string, input: LifeDeckRequest) {
+    return new LifeDeckReader(this.db).deck(userId, input);
+  }
+
+  async stacks(userId: string) {
+    return new LifeDeckReader(this.db).stacks(userId);
+  }
+
+  async rate(userId: string, id: string, rating: LifeRating, key: string | undefined) {
+    const result = await this.idempotency.execute(
+      userId,
+      `POST /v1/life/${id}/rating`,
+      key,
+      { rating },
+      async (tx) => {
+        const [object] = await tx
+          .select()
+          .from(lifeObjects)
+          .where(
+            and(
+              eq(lifeObjects.id, id),
+              eq(lifeObjects.userId, userId),
+              isNull(lifeObjects.deletedAt),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!object || !["ACTIVE", "RESOLVED"].includes(object.status))
+          throw new NotFoundException({ code: "LIFE_OBJECT_NOT_FOUND" });
+        const existing = await new PreferenceReader(tx).read(userId, [{ id, kind: object.kind }]);
+        if ((existing.get(id)?.myRating ?? "NONE") !== rating) {
+          await tx.insert(preferenceSignals).values({
+            id: uuidv7(),
+            userId,
+            dimension: "life_object",
+            value: { lifeObjectId: id, kind: object.kind, rating },
+            polarity: rating === "DISLIKE" ? -1 : 1,
+            strength: rating === "NONE" ? 0 : 1,
+            confidence: 1,
+            sourceType: "LIFE_RATING",
+            sourceId: uuidv7(),
+            occurredAt: new Date(),
+          });
+        }
+        return { id, rating, updated: true as const };
+      },
+    );
+    return { ...result.body, replayed: result.replayed };
+  }
+
+  async delete(userId: string, id: string, key: string | undefined, traceId: string) {
+    const result = await this.idempotency.execute(
+      userId,
+      `DELETE /v1/life/${id}`,
+      key,
+      {},
+      async (tx) => {
+        // Feedback starts take this owner lock before sharing the object row; preserve that order.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId + ":action-plan"},0))`,
+        );
+        const [object] = await tx
+          .select()
+          .from(lifeObjects)
+          .where(and(eq(lifeObjects.id, id), eq(lifeObjects.userId, userId)))
+          .for("update")
+          .limit(1);
+        if (!object) throw new NotFoundException({ code: "LIFE_OBJECT_NOT_FOUND" });
+        if (!object.deletedAt) {
+          const now = new Date();
+          await tx
+            .update(lifeObjects)
+            .set({
+              status: "DELETED",
+              deletedAt: now,
+              updatedAt: now,
+              objectVersion: object.objectVersion + 1,
+            })
+            .where(eq(lifeObjects.id, id));
+          // Cancellation changes action progress without claiming this category is disliked.
+          await tx.execute(sql`INSERT INTO feedback_events
+          (id,user_id,recommendation_id,decision_session_id,event_type,reason_code,metadata,client_event_id,created_at)
+          SELECT gen_random_uuid(),${userId}::uuid,r.id,r.decision_session_id,'DISMISS','OBJECT_DELETED',
+            '{"reason":"OBJECT_DELETED"}'::jsonb,gen_random_uuid(),
+            greatest(${now.toISOString()}::timestamptz,coalesce((SELECT max(f.created_at)+interval '1 microsecond'
+              FROM feedback_events f WHERE f.user_id=r.user_id AND f.recommendation_id=r.id),${now.toISOString()}::timestamptz))
+          FROM recommendations r JOIN action_candidates c ON c.id=r.action_candidate_id AND c.user_id=r.user_id
+          WHERE r.user_id=${userId}::uuid AND c.target_life_object_id=${id}::uuid
+            AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
+              AND f.event_type IN ('ACCEPT','EXECUTE'))
+            AND NOT EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
+              AND f.event_type IN ('COMPLETE','REJECT','DISMISS','SKIP'))`);
+          await tx.execute(sql`UPDATE decision_sessions s SET status='CLOSED',closed_at=${now.toISOString()}::timestamptz
+          WHERE s.user_id=${userId}::uuid AND s.status<>'CLOSED'
+            AND EXISTS(SELECT 1 FROM recommendations r JOIN action_candidates c
+              ON c.id=r.action_candidate_id AND c.user_id=r.user_id
+              WHERE r.user_id=s.user_id AND r.decision_session_id=s.id
+                AND c.target_life_object_id=${id}::uuid)`);
+          await tx
+            .update(actionCandidates)
+            .set({
+              hardFilterStatus: "FILTERED",
+              hardFilterReason: "SOURCE_UNAVAILABLE",
+              rank: null,
+            })
+            .where(
+              and(eq(actionCandidates.userId, userId), eq(actionCandidates.targetLifeObjectId, id)),
+            );
+          await tx.execute(sql`UPDATE clarification_requests q SET status='CANCELLED'
+          WHERE q.user_id=${userId}::uuid AND q.status='PENDING'
+            AND EXISTS(SELECT 1 FROM decision_sessions s WHERE s.id=q.decision_session_id
+              AND s.user_id=q.user_id AND s.status='CLOSED')`);
+          await tx.insert(auditEvents).values({
+            id: uuidv7(),
+            actorType: "USER",
+            actorId: userId,
+            action: "LIFE_DELETED",
+            targetType: "LIFE_OBJECT",
+            targetId: id,
+            metadata: {},
+            traceId,
+          });
+        }
+        return { id, deleted: true as const };
+      },
+    );
+    return { ...result.body, replayed: result.replayed };
   }
 
   async search(userId: string, input: LifeSearchRequest) {
@@ -143,6 +291,7 @@ export class LifeService {
     const rows = await this.db
       .select({
         ...listFields,
+        objectVersion: lifeObjects.objectVersion,
         nextAt: lifeObjectProjection.nextAt,
         expiresAt: lifeObjectProjection.expiresAt,
         hasLocation,
@@ -155,7 +304,37 @@ export class LifeService {
       .orderBy(desc(lifeObjects.createdAt), desc(lifeObjects.id))
       .limit(input.limit + 1);
     const page = rows.slice(0, input.limit);
-    const items = page.map(({ cursorCreatedAt: _cursorCreatedAt, ...item }) => item);
+    const facets = page.length
+      ? await this.db
+          .select({ id: lifeObjectFacets.lifeObjectId, data: lifeObjectFacets.data })
+          .from(lifeObjectFacets)
+          .where(
+            and(
+              eq(lifeObjectFacets.userId, userId),
+              isNull(lifeObjectFacets.deletedAt),
+              inArray(
+                lifeObjectFacets.lifeObjectId,
+                page.map((item) => item.id),
+              ),
+            ),
+          )
+          .orderBy(desc(lifeObjectFacets.confidence), desc(lifeObjectFacets.createdAt))
+      : [];
+    const names = new Map<string, string>();
+    for (const facet of facets) {
+      if (names.has(facet.id)) continue;
+      const facts = structuredLifeFactsSchema.safeParse(facet.data.facts);
+      if (!facts.success || facts.data.origin !== "USER_STATED") continue;
+      const place = facts.data.place;
+      const name = place?.name ?? place?.city ?? place?.province ?? place?.region;
+      if (name) names.set(facet.id, name.slice(0, 240));
+    }
+    const learned = await new PreferenceReader(this.db).read(userId, page);
+    const items = page.map(({ cursorCreatedAt: _cursorCreatedAt, ...item }) => ({
+      ...item,
+      ...(learned.get(item.id) ?? { myRating: "NONE" as const, preferenceScore: 0 }),
+      placeLabel: names.get(item.id) ?? null,
+    }));
     const last = page.at(-1);
     return {
       items,
@@ -166,6 +345,194 @@ export class LifeService {
             )
           : null,
     };
+  }
+
+  async rebuildFacts(userId: string, id: string, key: string | undefined, traceId: string) {
+    const result = await this.idempotency.execute(
+      userId,
+      `POST /v1/life/${id}/rebuild-facts`,
+      key,
+      {},
+      async (tx) => {
+        const [object] = await tx
+          .select()
+          .from(lifeObjects)
+          .where(
+            and(
+              eq(lifeObjects.userId, userId),
+              eq(lifeObjects.id, id),
+              isNull(lifeObjects.deletedAt),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!object) throw new NotFoundException({ code: "LIFE_OBJECT_NOT_FOUND" });
+        await tx.insert(outboxEvents).values({
+          id: uuidv7(),
+          aggregateType: "LIFE_OBJECT",
+          aggregateId: id,
+          eventType: "LIFE_FACTS_REBUILD",
+          payload: { lifeObjectId: id, userId, traceId },
+        });
+        return { lifeObjectId: id, accepted: true as const };
+      },
+    );
+    return { ...result.body, replayed: result.replayed };
+  }
+
+  async patch(userId: string, id: string, input: PatchLifeObjectRequest, key: string | undefined) {
+    const result = await this.idempotency.execute(
+      userId,
+      `PATCH /v1/life/${id}`,
+      key,
+      input,
+      async (tx) => {
+        const [object] = await tx
+          .select()
+          .from(lifeObjects)
+          .where(
+            and(
+              eq(lifeObjects.userId, userId),
+              eq(lifeObjects.id, id),
+              isNull(lifeObjects.deletedAt),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!object) throw new NotFoundException({ code: "LIFE_OBJECT_NOT_FOUND" });
+        const [user] = await tx
+          .select({ timezone: users.timezone })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+        const now = new Date();
+        const changes = {
+          ...("title" in input ? { title: input.title } : {}),
+          ...("summary" in input ? { summary: input.summary } : {}),
+          ...(input.status ? { status: input.status } : {}),
+          updatedAt: now,
+          objectVersion: object.objectVersion + 1,
+        };
+        await tx.update(lifeObjects).set(changes).where(eq(lifeObjects.id, id));
+        for (const edit of input.facts ?? []) {
+          // Keep replaced AI evidence in the database as historical facets; explicit corrections win.
+          await tx
+            .update(lifeObjectFacets)
+            .set({ deletedAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(lifeObjectFacets.userId, userId),
+                eq(lifeObjectFacets.lifeObjectId, id),
+                eq(lifeObjectFacets.facetKey, edit.key),
+                eq(lifeObjectFacets.facetType, edit.type),
+                isNull(lifeObjectFacets.deletedAt),
+              ),
+            );
+          await tx.insert(lifeObjectFacets).values({
+            id: uuidv7(),
+            userId,
+            lifeObjectId: id,
+            facetType: edit.type,
+            facetKey: edit.key,
+            schemaVersion: 3,
+            data: {
+              intent: null,
+              description: null,
+              verification: "UNVERIFIED",
+              facts: { ...edit.facts, origin: "USER_STATED" },
+            },
+            confidence: 1,
+            originType: "USER_STATED",
+            originId: id,
+          });
+        }
+        const saved = await tx
+          .select()
+          .from(lifeObjectFacets)
+          .where(
+            and(
+              eq(lifeObjectFacets.userId, userId),
+              eq(lifeObjectFacets.lifeObjectId, id),
+              isNull(lifeObjectFacets.deletedAt),
+            ),
+          );
+        const facets = saved.flatMap((facet) => {
+          const parsed = parsedFacetSchema.safeParse({
+            type: facet.facetType,
+            key: facet.facetKey,
+            data: {
+              intent: facet.data.intent ?? null,
+              description: facet.data.description ?? null,
+              verification: "UNVERIFIED",
+              ...(facet.data.facts ? { facts: facet.data.facts } : {}),
+            },
+            confidence: facet.confidence,
+            source: facet.originType === "INFERRED" ? "INFERRED" : "EXTRACTED",
+          });
+          return parsed.success ? [parsed.data] : [];
+        });
+        const {
+          facets: _normalized,
+          actionFacts: _facts,
+          ...projection
+        } = buildLifeProjection(
+          {
+            ...object,
+            ...changes,
+            facets,
+            importance: object.importanceScore ?? 0.5,
+            kind: facetTypeSchema.parse(object.kind),
+          },
+          { referenceTime: now.toISOString(), timezone: user?.timezone ?? "Asia/Shanghai" },
+        );
+        const verified = verifiedDestinationForObject({ ...object, ...changes }, saved);
+        if (verified && projection.latitude == null) Object.assign(projection, verified);
+        for (const facet of _normalized) {
+          if (
+            (input.facts ?? []).some((edit) => edit.key === facet.key && edit.type === facet.type)
+          )
+            await tx
+              .update(lifeObjectFacets)
+              .set({ data: facet.data })
+              .where(
+                and(
+                  eq(lifeObjectFacets.userId, userId),
+                  eq(lifeObjectFacets.lifeObjectId, id),
+                  eq(lifeObjectFacets.facetType, facet.type),
+                  eq(lifeObjectFacets.facetKey, facet.key),
+                  eq(lifeObjectFacets.originType, "USER_STATED"),
+                  isNull(lifeObjectFacets.deletedAt),
+                ),
+              );
+        }
+        await tx
+          .insert(lifeObjectProjection)
+          .values({
+            lifeObjectId: id,
+            userId,
+            ...projection,
+            displayKind: object.kind,
+            importanceScore: object.importanceScore,
+            rebuiltAt: now,
+          })
+          .onConflictDoUpdate({
+            target: lifeObjectProjection.lifeObjectId,
+            set: { ...projection, rebuiltAt: now },
+          });
+        await tx.insert(auditEvents).values({
+          id: uuidv7(),
+          actorType: "USER",
+          actorId: userId,
+          action: "LIFE_OBJECT_UPDATED",
+          targetType: "LIFE_OBJECT",
+          targetId: id,
+          metadata: { fields: Object.keys(input), objectVersion: changes.objectVersion },
+          traceId: uuidv7(),
+        });
+        return { id, updated: true as const, objectVersion: changes.objectVersion };
+      },
+    );
+    return { ...result.body, replayed: result.replayed };
   }
 
   async get(userId: string, id: string) {

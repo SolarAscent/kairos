@@ -263,7 +263,7 @@ describe("PostgreSQL + HTTP + Worker", () => {
     ).toBe(404);
   });
   it("deduplicates feedback across request keys and detects changed content", async () => {
-    const body = { clientEventId: randomUUID(), eventType: "ACCEPT", metadata: { a: 1, b: 2 } };
+    const body = { clientEventId: randomUUID(), eventType: "SKIP", metadata: { a: 1, b: 2 } };
     const url = `/v1/now/sessions/${sessionId}/feedback`;
     const responses = await Promise.all([request("POST", url, body), request("POST", url, body)]);
     responses.forEach((r) => {
@@ -280,7 +280,7 @@ describe("PostgreSQL + HTTP + Worker", () => {
     ).toBe(409);
     await worker.processNext();
     const signals = await pool.query("SELECT * FROM preference_signals WHERE user_id=$1", [userId]);
-    expect(signals.rows).toHaveLength(1);
+    expect(signals.rows).toHaveLength(0);
   });
   it("retains three sequential captures in Life sections and the full list while Now remains a single action", async () => {
     const guest = (await request("POST", "/v1/auth/wechat/login", { code: randomUUID() })).json()
@@ -304,7 +304,10 @@ describe("PostgreSQL + HTTP + Worker", () => {
     const decision = nowResponseSchema.parse(
       (await request("POST", "/v1/now/sessions", {}, guest.accessToken)).json().data,
     );
-    expect(decision.candidates).toHaveLength(3);
+    expect(new Set(decision.candidates.map((item) => item.lifeObjectId)).size).toBe(3);
+    expect(new Set(decision.candidates.map((item) => item.actionKey)).size).toBe(
+      decision.candidates.length,
+    );
     expect(decision.recommendation).not.toBeNull();
     expect(
       (
@@ -535,8 +538,8 @@ describe("PostgreSQL + HTTP + Worker", () => {
     const spec = response.json();
     expect(spec.openapi).toBe("3.1.0");
     expect(
-      spec.paths["/v1/captures"].post.requestBody.content["application/json"].schema.properties.text
-        .maxLength,
+      spec.paths["/v1/captures"].post.requestBody.content["application/json"].schema.oneOf[0]
+        .properties.text.maxLength,
     ).toBe(5000);
   });
 });

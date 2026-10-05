@@ -18,7 +18,11 @@ pnpm dev:demo
 
 原生工程位于 `apps/miniprogram`，使用 `pnpm build:miniprogram` 构建并导入生成的 `dist`。本地模拟与真实微信的配置、部署准备和验收步骤见[微信接入说明](wechat-setup.md)。
 
-`MODEL_PROVIDER=mock` 显式启用规则模拟；`openai-responses` 使用 `.env` 中的 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。未配置或拼错 Provider 会报错。真实模型失败进入 Outbox 重试，最多 8 次，原始输入保留；不会自动改成 Mock 伪装成功。生产禁止 `WECHAT_MOCK_LOGIN=true`。
+`.env.example` 推荐 `MODEL_PROVIDER=qwen`，使用服务端 `DASHSCOPE_API_KEY`；文字和图片默认固定 `qwen3.7-flash-2026-07-15`。实时语音还需要北京业务空间的 `DASHSCOPE_WORKSPACE_ID`，使用 `qwen3-asr-flash-realtime`。`MODEL_PROVIDER=glm` 可选择智谱文字／图片模型和 `GLM_API_KEY`。价格与选择依据见[国内模型比较](domestic-model-comparison-2026-10-05.md)，接入与验收见[本轮说明](domestic-multimodal-2026-10-05.md)。
+
+没有模型凭据时可显式设置 `MODEL_PROVIDER=mock` 体验原文本闭环。真实模型未配置或失败时不会自动切换 Mock；文字和图片原始输入保留，缺配置直接标记解析失败，临时模型故障进入 Outbox 重试，最多 8 次。`GET /v1/media/capabilities` 明确报告图片和实时语音是否配置，语音缺配置不启动录音或上游请求。生产禁止 `WECHAT_MOCK_LOGIN=true`。
+
+本轮情境、行动规划、实际时间消耗与内部开始／完成闭环，以及腾讯位置服务配置和当前能力边界，见[后端规划说明](backend-planning-2026-10-05.md)。
 
 ## 验证
 

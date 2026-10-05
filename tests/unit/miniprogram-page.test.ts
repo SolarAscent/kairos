@@ -5,10 +5,18 @@ import { describe, expect, it } from "vitest";
 
 const requestId = randomUUID();
 const userId = randomUUID();
-function mount(send: (options: any) => void, nonCallableFunction = false, route = "home") {
+function mount(
+  send: (options: any) => void,
+  nonCallableFunction = false,
+  route = "home",
+  wxExtras: Record<string, unknown> = {},
+  runtimeExtras: Record<string, unknown> = {},
+  loadOptions: Record<string, string> = { section: "RECENT" },
+) {
   let definition: any;
   let app: any;
   const navigations: string[] = [];
+  const toasts: any[] = [];
   let locationCalls = 0;
   const storage = new Map<string, unknown>();
   storage.set("kairos:develop:touristappid:http://127.0.0.1:3000", {
@@ -30,6 +38,7 @@ function mount(send: (options: any) => void, nonCallableFunction = false, route 
         : {}),
       setTimeout,
       clearTimeout,
+      ...runtimeExtras,
       Behavior: (options: unknown) => options,
       App: (options: unknown) => {
         app = options;
@@ -54,12 +63,14 @@ function mount(send: (options: any) => void, nonCallableFunction = false, route 
           success({ randomValues: new Uint8Array(randomBytes(16)).buffer }),
         nextTick: (callback: () => void) => Promise.resolve().then(callback),
         request: send,
+        showToast: (options: any) => toasts.push(options),
         navigateTo: ({ url }: any) => navigations.push(url),
         navigateBack: () => {},
         getLocation: ({ fail }: any) => {
           locationCalls++;
           fail({ errMsg: "denied" });
         },
+        ...wxExtras,
       },
     },
     { codeGeneration: { strings: false, wasm: false } },
@@ -98,10 +109,11 @@ function mount(send: (options: any) => void, nonCallableFunction = false, route 
       createInstance: () => createInstance(pageDefinition),
       openRoute,
       navigations,
+      toasts,
       locationCalls: () => locationCalls,
       services: app.globalData,
     };
-    page.onLoad({ section: "RECENT" });
+    page.onLoad(loadOptions);
     return page;
   }
   return createInstance();
@@ -125,7 +137,7 @@ describe("compiled Mini Program page in a restricted JS runtime", () => {
     page.setData({ draft: "微信运行时仍能留下文字" });
     await page.saveCapture();
     expect(page.data.draft).toBe("");
-    expect(page.data.notice).toBe("收到了");
+    expect(page.data.notice).toBe("收纳好了");
     expect(page.data.error).toBe("");
     page.onUnload();
   });
@@ -153,14 +165,16 @@ describe("compiled Mini Program page in a restricted JS runtime", () => {
     page.setData({ draft: "想去看海", sheet: true });
     await page.saveCapture();
     expect(page.data.draft).toBe("想去看海");
-    expect(page.data.sheet).toBe(true);
+    expect(page.data.sheet).toBe(false);
+    expect(page.data.cards[0].phase).toBe("FAILED_LOCAL");
+    expect(page.toasts).toHaveLength(0);
     expect(page.data.error).toContain("暂时连接不上");
     await page.saveCapture();
     expect(writes).toHaveLength(2);
     expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
     expect(writes[1].data.sourceChannel).toBe("MINIPROGRAM");
     expect(page.data.draft).toBe("");
-    expect(page.data.notice).toBe("收到了");
+    expect(page.data.notice).toBe("收纳好了");
     page.onUnload();
   });
   it("creates a new operation key when a failed draft is changed", async () => {
@@ -301,6 +315,253 @@ function lifeItem(title: string) {
   };
 }
 const flushPage = () => new Promise<void>((resolve) => setImmediate(resolve));
+describe("Category stacks, persisted preference and wish removal", () => {
+  const group = (items: any[], nextCursor: string | null = null) => ({
+    kind: items[0].kind,
+    title: items[0].kind === "MEDIA" ? "内容" : "愿望",
+    items,
+    nextCursor,
+    asOf: new Date().toISOString(),
+  });
+  it("preserves backend preference order, keeps every loaded card and pages each category independently", async () => {
+    const wishes = Array.from({ length: 10 }, (_, i) => lifeItem(`念头 ${i}`));
+    const media = { ...lifeItem("一部可能喜欢的纪录片"), kind: "MEDIA", preferenceScore: 0.8 };
+    const extra = lifeItem("第十一张");
+    const pages: any[] = [];
+    const page = mount((options) => {
+      if (options.url.endsWith("/stacks"))
+        success(options, [group(wishes, "desire-cursor"), group([media])]);
+      else {
+        pages.push(options.data);
+        success(options, {
+          items: [wishes[9], extra],
+          nextCursor: null,
+          asOf: new Date().toISOString(),
+        });
+      }
+    });
+    await page.loadLifeStacks();
+    expect(page.data.lifeStacks.map((item: any) => item.kind)).toEqual(["DESIRE", "MEDIA"]);
+    expect(page.data.lifeStacks[0].items.map((item: any) => item.id)).toEqual(
+      wishes.map((item) => item.id),
+    );
+    expect(page.locationCalls()).toBe(0);
+    page.stackTouchStart();
+    expect(page.data.stackDragging).toBe(true);
+    page.setStackCurrent("DESIRE", 8);
+    page.stackTouchEnd();
+    await flushPage();
+    expect(pages).toEqual([{ kind: "DESIRE", cursor: "desire-cursor", limit: 20 }]);
+    expect(page.data.lifeStacks[0].items).toHaveLength(11);
+    expect(page.data.lifeStacks[0].current).toBe(8);
+    expect(page.data.lifeStacks[1].items[0].id).toBe(media.id);
+    expect(page.data.stackDragging).toBe(false);
+    page.onUnload();
+  });
+  it("persists votes before selecting them, reuses lost-response keys and sends NONE when tapping the selected vote", async () => {
+    const item = lifeItem("想读的书");
+    const writes: any[] = [];
+    const page = mount((options) => {
+      if (options.url.endsWith("/stacks")) success(options, [group([item])]);
+      else {
+        writes.push(options);
+        if (writes.length === 1) options.fail({ errMsg: "response lost" });
+        else
+          success(options, {
+            id: item.id,
+            rating: options.data.rating,
+            updated: true,
+            replayed: false,
+          });
+      }
+    });
+    await page.loadLifeStacks();
+    const vote = (rating: string) =>
+      page.rateLifeItem({ currentTarget: { dataset: { id: item.id, rating } } });
+    await vote("LIKE");
+    expect(page.data.lifeStacks[0].items[0].myRating).toBe("NONE");
+    await vote("LIKE");
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.data.lifeStacks[0].items[0].myRating).toBe("LIKE");
+    await vote("LIKE");
+    expect(writes[2].data.rating).toBe("NONE");
+    expect(writes[2].header["X-Idempotency-Key"]).not.toBe(writes[1].header["X-Idempotency-Key"]);
+    await vote("DISLIKE");
+    expect(page.data.lifeStacks[0].items[0].myRating).toBe("DISLIKE");
+    page.onUnload();
+  });
+  it("ignores a vote response after hide and a category response after logout", async () => {
+    const item = lifeItem("未完成的念头");
+    let ratingRequest: any;
+    let stackRequest: any;
+    const page = mount((options) => {
+      if (options.url.endsWith("/rating")) ratingRequest = options;
+      else if (!stackRequest) {
+        stackRequest = true;
+        success(options, [group([item])]);
+      } else stackRequest = options;
+    });
+    await page.loadLifeStacks();
+    const voting = page.rateLifeItem({
+      currentTarget: { dataset: { id: item.id, rating: "LIKE" } },
+    });
+    await flushPage();
+    page.onHide();
+    success(ratingRequest, { id: item.id, rating: "LIKE", updated: true, replayed: false });
+    await voting;
+    expect(page.data.lifeStacks[0].items[0].myRating).toBe("NONE");
+    const loading = page.loadLifeStacks(true);
+    await flushPage();
+    page.services.client.clear();
+    success(stackRequest, [group([lifeItem("另一账号的卡")])]);
+    await loading;
+    expect(page.data.lifeStacks[0].items[0].id).toBe(item.id);
+    page.onUnload();
+  });
+  it("keeps an active wish until the real delete receipt, then clears it and requests another suggestion", async () => {
+    const target = randomUUID();
+    let deletion: any;
+    const decisions: any[] = [];
+    const removedKeys: string[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method === "DELETE") deletion = options;
+        else if (options.url.endsWith("/now/sessions")) {
+          decisions.push(options.data);
+          success(options, {
+            sessionId: randomUUID(),
+            status: "QUIET",
+            recommendation: null,
+            candidates: [],
+            question: null,
+            replayed: false,
+          });
+        } else success(options, []);
+      },
+      false,
+      "home",
+      { removeStorageSync: (key: string) => removedKeys.push(key) },
+    );
+    page.setData({
+      sessionId: randomUUID(),
+      recommendation: { targetLifeObjectId: target, progress: { state: "ACTIVE" } },
+    });
+    const deleting = page.deleteWish();
+    await flushPage();
+    expect(page.data.recommendation.targetLifeObjectId).toBe(target);
+    expect(decisions).toHaveLength(0);
+    expect(deletion.data).toEqual({});
+    success(deletion, { id: target, deleted: true, replayed: false });
+    await deleting;
+    expect(page.data.recommendation).toBeNull();
+    expect(page.data.notice).toContain("已删除");
+    expect(decisions[0].excludeObjectIds).toContain(target);
+    expect(removedKeys.some((key) => key.includes(":active:"))).toBe(true);
+    page.onUnload();
+  });
+  it("preserves the wish and its delete key when the server receipt is lost", async () => {
+    const target = randomUUID();
+    const writes: any[] = [];
+    const page = mount((options) => {
+      writes.push(options);
+      options.fail({ errMsg: "offline" });
+    });
+    page.setData({ sessionId: randomUUID(), recommendation: { targetLifeObjectId: target } });
+    await page.deleteWish();
+    await page.deleteWish();
+    expect(page.data.recommendation.targetLifeObjectId).toBe(target);
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.data.notice).not.toContain("已删除");
+    page.onUnload();
+  });
+  it("releases deletion busy state on hide and confirms the closed session before replacing the returned card", async () => {
+    const target = randomUUID(),
+      sessionId = randomUUID();
+    let deletion: any;
+    let freshReads = 0,
+      suggestions = 0;
+    const page = mount((options) => {
+      if (options.method === "DELETE") deletion = options;
+      else if (options.url.includes("/now/sessions/")) {
+        freshReads++;
+        success(options, {
+          sessionId,
+          status: "QUIET",
+          recommendation: null,
+          candidates: [],
+          question: null,
+          replayed: false,
+        });
+      } else if (options.url.endsWith("/now/sessions")) {
+        suggestions++;
+        success(options, {
+          sessionId: randomUUID(),
+          status: "QUIET",
+          recommendation: null,
+          candidates: [],
+          question: null,
+          replayed: false,
+        });
+      } else success(options, []);
+    });
+    page.setData({
+      sessionId,
+      recommendation: { targetLifeObjectId: target, progress: { state: "ACTIVE" } },
+    });
+    const deleting = page.deleteWish();
+    await flushPage();
+    page.onHide();
+    expect(page.data.busy).toBe(false);
+    success(deletion, { id: target, deleted: true, replayed: false });
+    await deleting;
+    expect(page.data.recommendation.targetLifeObjectId).toBe(target);
+    expect(freshReads).toBe(0);
+    page.onShow();
+    await flushPage();
+    expect(freshReads).toBe(1);
+    expect(suggestions).toBe(1);
+    expect(page.data.recommendation).toBeNull();
+    expect(page.data.busy).toBe(false);
+    page.onUnload();
+  });
+  it("opens a category deck with preference order, continues its cursor and uses a filtered search only when needed", async () => {
+    const first = lifeItem("偏好较高的一张"),
+      second = lifeItem("更多内容");
+    const requests: any[] = [];
+    const page = mount(
+      (options) => {
+        requests.push(options);
+        const items = options.data.cursor ? [second] : [first];
+        success(
+          options,
+          options.url.endsWith("/deck")
+            ? {
+                items,
+                nextCursor: options.data.cursor ? null : "deck-page-two",
+                asOf: new Date().toISOString(),
+              }
+            : { items, nextCursor: null },
+        );
+      },
+      false,
+      "life-list",
+      {},
+      {},
+      { kind: "DESIRE" },
+    );
+    await flushPage();
+    expect(requests[0].url).toContain("/life/deck");
+    expect(page.data.groups[0].items).toHaveLength(1);
+    await page.loadItems();
+    expect(requests[1].data.cursor).toBe("deck-page-two");
+    expect(page.data.groups[0].items).toHaveLength(2);
+    await page.setTime({ detail: { value: "1" } });
+    expect(requests.at(-1).url).toContain("/life/search");
+    expect(requests.at(-1).data.savedWithinDays).toBe(7);
+    expect(page.locationCalls()).toBe(0);
+    page.onUnload();
+  });
+});
 describe("Life sections and paginated secondary page", () => {
   it("keeps earlier records in section previews after refresh and opens the full-list route", async () => {
     const items = [lifeItem("新留下的"), lifeItem("之前留下的"), lifeItem("更早的念头")];
@@ -418,5 +679,721 @@ describe("Life sections and paginated secondary page", () => {
     success(pending, { items: [lifeItem("迟到的响应")], nextCursor: null });
     await flushPage();
     expect(page.data).toEqual(before);
+  });
+});
+
+describe("Home context and multimodal input interactions", () => {
+  function routePreparation() {
+    const target = randomUUID();
+    return {
+      sessionId: randomUUID(),
+      status: "RECOMMENDED",
+      replayed: false,
+      question: null,
+      recommendation: {
+        id: randomUUID(),
+        targetLifeObjectId: target,
+        headline: "先核对书店的往返路程",
+        body: "看看现在是否来得及去一趟。",
+        reasonText: "还没有核对当前位置到书店的路程。",
+        executionType: "NAVIGATE",
+        score: 0.6,
+        plan: {
+          mode: "PREPARE",
+          startAt: new Date().toISOString(),
+          endAt: new Date(Date.now() + 300000).toISOString(),
+          totalSeconds: 300,
+          activitySeconds: 300,
+          travelSeconds: 0,
+          returnSeconds: 0,
+          basis: "PLANNING_ESTIMATE",
+          steps: ["核对往返交通"],
+          requiresGoOut: false,
+          targetRegion: "广东",
+          verification: "UNVERIFIED",
+          label: "约 5 分钟",
+        },
+      },
+      candidates: [
+        {
+          lifeObjectId: target,
+          actionMode: "DO",
+          title: "去书店",
+          totalScore: 0,
+          rank: null,
+          filtered: true,
+          filterReason: "ROUTE_UNVERIFIED",
+          scores: { value: 0, fit: 0, urgency: 0, friction: 0, uncertainty: 0 },
+        },
+      ],
+    };
+  }
+  it("requests GCJ02 location only after the explicit route button and submits ephemeral device context", async () => {
+    const writes: any[] = [];
+    const stored: unknown[] = [];
+    let locationCalls = 0;
+    const response = routePreparation();
+    const page = mount(
+      (options) => {
+        writes.push(options.data);
+        success(options, response);
+      },
+      false,
+      "home",
+      {
+        getLocation: (options: any) => {
+          locationCalls++;
+          expect(options.type).toBe("gcj02");
+          options.success({ latitude: 23.1291, longitude: 113.2644 });
+        },
+        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+      },
+    );
+    await page.decide();
+    expect(locationCalls).toBe(0);
+    expect(writes[0].context).toEqual({});
+    expect(page.data.canVerifyRoute).toBe(true);
+    await page.verifyCurrentRoute();
+    expect(locationCalls).toBe(1);
+    expect(writes[1].context).toMatchObject({
+      willingToGoOut: true,
+      location: {
+        latitude: 23.1291,
+        longitude: 113.2644,
+        coordinateSystem: "GCJ02",
+        source: "DEVICE",
+      },
+    });
+    const location = writes[1].context.location;
+    expect(Date.parse(location.expiresAt) - Date.parse(location.observedAt)).toBeLessThanOrEqual(
+      7200000,
+    );
+    expect(Date.parse(location.expiresAt)).toBeGreaterThan(Date.now());
+    expect(stored).toEqual([]);
+    expect(JSON.stringify(page.data)).not.toContain("113.2644");
+    page.onHide();
+    expect(page.runtime.requestLocation).toBeNull();
+    expect(page.runtime.nowPending).toBeNull();
+    page.onUnload();
+  });
+  it("preserves the preparation card when location is denied and never submits a fake location", async () => {
+    let posts = 0;
+    const response = routePreparation();
+    const page = mount((options) => {
+      posts++;
+      success(options, response);
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.locationCalls()).toBe(1);
+    expect(posts).toBe(1);
+    expect(page.data.recommendation.targetLifeObjectId).toBe(
+      response.recommendation.targetLifeObjectId,
+    );
+    expect(page.data.error).toContain("微信设置中允许定位");
+    expect(page.runtime.requestLocation).toBeNull();
+    expect(page.data.busy).toBe(false);
+    page.onUnload();
+  });
+  it("ignores a late location permission result after the home page is hidden", async () => {
+    let locationCallback: any;
+    let posts = 0;
+    const page = mount(
+      (options) => {
+        posts++;
+        success(options, routePreparation());
+      },
+      false,
+      "home",
+      {
+        getLocation: (options: any) => {
+          locationCallback = options.success;
+        },
+      },
+    );
+    await page.decide();
+    const pending = page.verifyCurrentRoute();
+    page.onHide();
+    locationCallback({ latitude: 23.1291, longitude: 113.2644 });
+    await pending;
+    expect(posts).toBe(1);
+    expect(page.runtime.requestLocation).toBeNull();
+    expect(page.data.routeLocationBusy).toBe(false);
+    page.onUnload();
+  });
+  it("starts with a suggestion request and asks only the question returned by the backend", async () => {
+    const decisions: any[] = [],
+      answers: any[] = [];
+    const sessionId = randomUUID(),
+      questionId = randomUUID();
+    const question = {
+      id: questionId,
+      key: "AVAILABLE_TIME",
+      text: "现在有多久空闲？",
+      options: [
+        { id: "SHORT", label: "一会儿" },
+        { id: "SKIP", label: "先给我一个建议" },
+      ],
+      sequence: 1,
+      maxQuestions: 2,
+    };
+    const page = mount((options) => {
+      if (options.url.endsWith("/answers")) {
+        answers.push(options);
+        success(options, {
+          sessionId,
+          status: "QUIET",
+          question: null,
+          recommendation: null,
+          candidates: [],
+          replayed: false,
+        });
+      } else {
+        decisions.push(options.data);
+        success(options, {
+          sessionId,
+          status: "NEEDS_ANSWER",
+          question,
+          recommendation: null,
+          candidates: [],
+          replayed: false,
+        });
+      }
+    });
+    page.setData({ sections: [{ items: [{ kind: "PLACE" }] }] });
+    await page.decide();
+    expect(decisions[0].context).toEqual({});
+    expect(page.data.question.text).toBe("现在有多久空闲？");
+    await page.answerQuestion({ currentTarget: { dataset: { option: "tampered" } } });
+    expect(answers).toHaveLength(0);
+    await page.answerQuestion({ currentTarget: { dataset: { option: "SKIP" } } });
+    expect(answers[0].data).toEqual({ questionId, optionId: "SKIP" });
+    expect(page.data.question).toBeNull();
+    page.onUnload();
+  });
+  it("keeps the same answer key after a lost response and clears an expired question for a new suggestion", async () => {
+    const writes: any[] = [];
+    const page = mount((options) => {
+      writes.push(options);
+      if (writes.length === 1) options.fail({ errMsg: "offline" });
+      else
+        options.success({
+          statusCode: 410,
+          data: { error: { code: "DECISION_SESSION_EXPIRED", request_id: requestId } },
+        });
+    });
+    page.setData({
+      sessionId: randomUUID(),
+      question: { id: randomUUID(), options: [{ id: "SHORT", label: "一会儿" }] },
+    });
+    const event = { currentTarget: { dataset: { option: "SHORT" } } };
+    await page.answerQuestion(event);
+    expect(page.data.question).not.toBeNull();
+    await page.answerQuestion(event);
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.data.question).toBeNull();
+    expect(page.data.decided).toBe(false);
+    expect(page.data.error).toContain("再看看");
+    page.onUnload();
+  });
+  it("loads native image bytes and sends image plus optional caption to the authenticated backend", async () => {
+    const writes: any[] = [];
+    const page = mount(
+      (options) => {
+        if (options.url.endsWith("/capabilities"))
+          success(options, {
+            text: true,
+            image: true,
+            voice: true,
+            provider: "dashscope",
+            reason: null,
+          });
+        else if (options.method === "POST") {
+          writes.push(options);
+          success(options, {
+            captureId: randomUUID(),
+            status: "UPLOADED",
+            accepted: true,
+            replayed: false,
+          });
+        } else success(options, []);
+      },
+      false,
+      "home",
+      {
+        chooseMedia: ({ success }: any) =>
+          success({ tempFiles: [{ tempFilePath: "/tmp/photo.jpg", size: 10 }] }),
+        getFileSystemManager: () => ({
+          readFile: ({ success }: any) => success({ data: "/9j/AAAA" }),
+        }),
+      },
+    );
+    page.setData({ draft: "想去图片里的地方" });
+    page.openCapture();
+    await page.chooseImage();
+    await flushPage();
+    expect(writes[0].data).toMatchObject({
+      type: "IMAGE",
+      text: "想去图片里的地方",
+      image: { mimeType: "image/jpeg", base64: "/9j/AAAA" },
+    });
+    expect(writes[0].header.authorization).toBe("Bearer test-access");
+    expect(page.data.imagePath).toBe("");
+    page.onUnload();
+  });
+  it("records before upstream ready, streams text and auto-submits after release and final transcript", async () => {
+    const rec: any = {},
+      socket: any = { sent: [] },
+      writes: any[] = [];
+    const requested: string[] = [];
+    const sessionId = randomUUID();
+    const recorder = {
+      onStart: (callback: any) => (rec.start = callback),
+      onStop: (callback: any) => (rec.stop = callback),
+      onFrameRecorded: (callback: any) => (rec.frame = callback),
+      onError: (callback: any) => (rec.error = callback),
+      onInterruptionBegin: (callback: any) => (rec.interrupt = callback),
+      start: (options: any) => {
+        rec.options = options;
+        rec.start();
+      },
+      stop: () => rec.stop(),
+    };
+    const page = mount(
+      (options) => {
+        requested.push(options.url);
+        if (options.url.endsWith("/capabilities"))
+          success(options, {
+            text: true,
+            image: true,
+            voice: true,
+            provider: "dashscope",
+            reason: null,
+          });
+        else if (options.url.endsWith("/voice/sessions"))
+          success(options, {
+            sessionId,
+            ticket: "one-use-ticket",
+            expiresIn: 60,
+            socketPath: "/v1/media/voice/stream",
+            sampleRate: 16000,
+            format: "pcm16",
+          });
+        else if (options.method === "POST") {
+          writes.push(options);
+          success(options, {
+            captureId: randomUUID(),
+            status: "UPLOADED",
+            accepted: true,
+            replayed: false,
+          });
+        } else success(options, []);
+      },
+      false,
+      "home",
+      {
+        getDeviceInfo: () => ({ platform: "ios" }),
+        authorize: ({ success }: any) => success(),
+        getRecorderManager: () => recorder,
+        connectSocket: () => ({
+          onMessage: (callback: any) => (socket.message = callback),
+          onError: () => {},
+          onClose: () => {},
+          send: ({ data, success }: any) => {
+            socket.sent.push(data);
+            success?.();
+          },
+          close: () => (socket.closed = true),
+        }),
+      },
+    );
+    page.chooseVoice();
+    await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    expect(requested.filter((url) => url.endsWith("/voice/sessions"))).toHaveLength(1);
+    expect(requested.some((url) => url.endsWith("/capabilities"))).toBe(false);
+    const event = (data: unknown) => socket.message({ data: JSON.stringify(data) });
+    expect(page.data.voiceStatus).toBe("recording");
+    rec.frame({ frameBuffer: new ArrayBuffer(2), isLastFrame: false });
+    expect(socket.sent).toHaveLength(0);
+    event({ type: "ready", sessionId });
+    await flushPage();
+    expect(socket.sent).toHaveLength(1);
+    socket.sent = [];
+    expect(rec.options).toMatchObject({
+      format: "PCM",
+      sampleRate: 16000,
+      numberOfChannels: 1,
+      frameSize: 4,
+    });
+    expect(page.data.voiceStatus).toBe("recording");
+    event({ type: "partial", text: "想去" });
+    expect(page.data.voicePartial).toBe("想去");
+    expect(page.data.draft).toBe("想去");
+    event({ type: "final", text: "想去公园。" });
+    event({ type: "final", text: "看一看花。" });
+    expect(page.data.voiceRows[0].fading).toBe(true);
+    expect(page.data.draft).toContain("想去公园。");
+    // Native onStop can precede the final PCM frame. Finish must wait for both.
+    page.voiceTouchEnd();
+    expect(page.data.sheet).toBe(false);
+    expect(page.data.cards[0].phase).toBe("TRANSCRIBING");
+    expect(writes).toHaveLength(0);
+    page.openCapture();
+    page.chooseText();
+    expect(page.data.sheet).toBe(false);
+    expect(page.data.voiceStatus).toBe("finishing");
+    expect(socket.sent).toHaveLength(0);
+    rec.frame({ frameBuffer: new ArrayBuffer(2), isLastFrame: true });
+    await flushPage();
+    expect(socket.sent[0]).toBeInstanceOf(ArrayBuffer);
+    expect(JSON.parse(socket.sent[1])).toEqual({ type: "finish" });
+    event({ type: "done", text: "想去公园。看一看花。", sessionId });
+    await flushPage();
+    expect(writes[0].data).toMatchObject({
+      type: "VOICE",
+      text: "想去公园。看一看花。",
+      transcriptionSessionId: sessionId,
+    });
+    expect(socket.closed).toBe(true);
+    expect(page.toasts.filter((toast: any) => toast.title === "收纳好了")).toHaveLength(1);
+    expect(page.data.cards[0].phase).toBe("UPLOADED");
+    page.onUnload();
+  });
+  it("preserves live text and ignores late socket events after hiding the page", async () => {
+    const rec: any = {},
+      socket: any = {};
+    const sessionId = randomUUID();
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          options.url.endsWith("/capabilities")
+            ? { text: true, image: true, voice: true, provider: "dashscope", reason: null }
+            : {
+                sessionId,
+                ticket: "ticket",
+                expiresIn: 60,
+                socketPath: "/v1/media/voice/stream",
+                sampleRate: 16000,
+                format: "pcm16",
+              },
+        ),
+      false,
+      "home",
+      {
+        getDeviceInfo: () => ({ platform: "android" }),
+        authorize: ({ success }: any) => success(),
+        getRecorderManager: () => ({
+          onStart: (f: any) => (rec.start = f),
+          onStop: (f: any) => (rec.stop = f),
+          onFrameRecorded: () => {},
+          onError: () => {},
+          onInterruptionBegin: () => {},
+          start: () => rec.start(),
+          stop: () => {
+            rec.stopped = true;
+            rec.stop();
+          },
+        }),
+        connectSocket: () => ({
+          onMessage: (f: any) => (socket.message = f),
+          onError: () => {},
+          onClose: () => {},
+          send: () => {},
+          close: () => (socket.closed = true),
+        }),
+      },
+    );
+    page.chooseVoice();
+    await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    socket.message({ data: JSON.stringify({ type: "ready", sessionId }) });
+    socket.message({ data: JSON.stringify({ type: "partial", text: "没有说完的念头" }) });
+    page.voiceTouchEnd();
+    expect(page.data.cards[0].phase).toBe("TRANSCRIBING");
+    page.onHide();
+    expect(page.data.cards[0].phase).toBe("FAILED_LOCAL");
+    expect(rec.stopped).toBe(true);
+    expect(socket.closed).toBe(true);
+    expect(page.data.draft).toBe("没有说完的念头");
+    socket.message({ data: JSON.stringify({ type: "done", text: "迟到的结果", sessionId }) });
+    expect(page.data.draft).toBe("没有说完的念头");
+    page.chooseText();
+    expect(page.runtime.voiceSessionId).toBe("");
+    page.onUnload();
+  });
+  it("shows configuration and DevTools limitations without clearing the existing draft", async () => {
+    let configured = false;
+    const rec: any = {};
+    const page = mount(
+      (options) => {
+        if (options.url.endsWith("/voice/sessions"))
+          options.success({
+            statusCode: 503,
+            data: { error: { code: "VOICE_CONFIGURATION_MISSING", request_id: requestId } },
+          });
+        else
+          success(options, {
+            text: true,
+            image: configured,
+            voice: configured,
+            provider: "dashscope",
+            reason: "not_configured",
+          });
+      },
+      false,
+      "home",
+      {
+        getDeviceInfo: () => ({ platform: configured ? "devtools" : "ios" }),
+        authorize: ({ success }: any) => success(),
+        getRecorderManager: () => ({
+          onStart: (f: any) => (rec.start = f),
+          onStop: (f: any) => (rec.stop = f),
+          onFrameRecorded: () => {},
+          onError: () => {},
+          onInterruptionBegin: () => {},
+          start: () => rec.start(),
+          stop: () => rec.stop(),
+        }),
+        connectSocket: () => {
+          throw new Error("should not connect");
+        },
+      },
+    );
+    page.setData({ draft: "没有提交的原文" });
+    await page.chooseImage();
+    expect(page.data.error).toContain("尚未配置");
+    page.chooseVoice();
+    await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    expect(page.data.error).toContain("尚未配置");
+    configured = true;
+    page.chooseVoice();
+    await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    expect(page.data.error).toContain("真机");
+    expect(page.data.draft).toBe("没有提交的原文");
+    page.onUnload();
+  });
+  it("shows a sending card immediately, toasts only after receipt, and never blocks on AI list requests", async () => {
+    let receive: any;
+    const page = mount((options) => {
+      if (options.method === "POST") receive = options;
+    });
+    page.setData({ draft: "这是未经模型整理的很长的原话", sheet: true });
+    const saving = page.saveCapture();
+    expect(page.data.cards[0].phase).toBe("SENDING");
+    expect(page.data.cards[0].title).not.toBe(page.data.draft);
+    expect(page.data.tab).toBe("now");
+    expect(page.toasts).toHaveLength(0);
+    await flushPage();
+    success(receive, {
+      captureId: randomUUID(),
+      status: "UPLOADED",
+      accepted: true,
+      replayed: false,
+    });
+    await saving;
+    expect(page.data.busy).toBe(false);
+    expect(page.data.cards[0].phase).toBe("UPLOADED");
+    expect(page.toasts[0].title).toBe("收纳好了");
+    page.onUnload();
+  });
+  it("keeps polling slow jobs with backoff and replaces generic card titles with real AI summaries", async () => {
+    const jobs = new Map<number, { fn: () => void; delay: number }>();
+    let next = 0,
+      ready = false;
+    const id = randomUUID();
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          options.url.endsWith("/sections")
+            ? []
+            : [
+                {
+                  id,
+                  type: "TEXT",
+                  status: ready ? "READY" : "PROCESSING",
+                  text: "我想去海边看看，但是还没决定什么时候去",
+                  title: ready ? "去海边走走" : null,
+                  summary: ready ? "空闲时去看看海，日期还没决定。" : null,
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                },
+              ],
+        ),
+      false,
+      "home",
+      {},
+      {
+        setTimeout: (fn: () => void, delay: number) => {
+          jobs.set(++next, { fn, delay });
+          return next;
+        },
+        clearTimeout: (key: number) => jobs.delete(key),
+      },
+    );
+    page.runtime.visible = true;
+    for (let index = 0; index < 25; index++) await page.refreshLists();
+    expect(jobs.size).toBe(1);
+    expect([...jobs.values()][0].delay).toBe(30000);
+    expect(page.data.cards[0].title).toBe("留下一个念头");
+    ready = true;
+    await page.refreshLists();
+    expect(jobs.size).toBe(0);
+    expect(page.data.cards[0].title).toBe("去海边走走");
+    expect(page.data.cards[0].summary).toBe("空闲时去看看海，日期还没决定。");
+    expect(page.data.cards[0].statusLabel).toBe("已收纳");
+    expect(page.data.lifeCaptures).toHaveLength(0);
+    page.onUnload();
+  });
+  it("does not start late recording or submit when a hold is released during the permission prompt", async () => {
+    const permission: any = {};
+    let microphoneStarts = 0,
+      sockets = 0;
+    const page = mount(
+      (options) =>
+        success(options, {
+          sessionId: randomUUID(),
+          ticket: "test-ticket",
+          expiresIn: 60,
+          socketPath: "/v1/media/voice/stream",
+          sampleRate: 16000,
+          format: "pcm16",
+        }),
+      false,
+      "home",
+      {
+        getDeviceInfo: () => ({ platform: "ios" }),
+        authorize: (options: any) => Object.assign(permission, options),
+        getRecorderManager: () => {
+          microphoneStarts++;
+          throw new Error("must not reach microphone");
+        },
+        connectSocket: () => {
+          sockets++;
+          throw new Error("must not reach socket");
+        },
+      },
+    );
+    page.chooseVoice();
+    const starting = page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    await flushPage();
+    page.voiceTouchEnd();
+    permission.success();
+    await starting;
+    expect(microphoneStarts).toBe(0);
+    expect(sockets).toBe(0);
+    expect(page.data.cards).toHaveLength(0);
+    expect(page.toasts).toHaveLength(0);
+    page.onUnload();
+  });
+  it("sliding up discards this recording and ignores its late final text without submitting", async () => {
+    const rec: any = {},
+      socket: any = {};
+    const sessionId = randomUUID();
+    let captures = 0;
+    const page = mount(
+      (options) => {
+        if (options.url.endsWith("/voice/sessions"))
+          success(options, {
+            sessionId,
+            ticket: "test-ticket",
+            expiresIn: 60,
+            socketPath: "/v1/media/voice/stream",
+            sampleRate: 16000,
+            format: "pcm16",
+          });
+        else captures++;
+      },
+      false,
+      "home",
+      {
+        getDeviceInfo: () => ({ platform: "ios" }),
+        authorize: ({ success }: any) => success(),
+        getRecorderManager: () => ({
+          onStart: (f: any) => (rec.start = f),
+          onStop: (f: any) => (rec.stop = f),
+          onFrameRecorded: () => {},
+          onError: () => {},
+          onInterruptionBegin: () => {},
+          start: () => rec.start(),
+          stop: () => rec.stop(),
+        }),
+        connectSocket: () => ({
+          onMessage: (f: any) => (socket.message = f),
+          onError: () => {},
+          onClose: () => {},
+          send: () => {},
+          close: () => (socket.closed = true),
+        }),
+      },
+    );
+    page.setData({ draft: "先前留下的未提交文字" });
+    page.chooseVoice();
+    await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
+    socket.message({ data: JSON.stringify({ type: "ready", sessionId }) });
+    socket.message({ data: JSON.stringify({ type: "partial", text: "这段不想收好" }) });
+    page.voiceTouchMove({ touches: [{ clientY: 180 }] });
+    expect(page.data.voiceCancelGesture).toBe(true);
+    page.voiceTouchEnd();
+    socket.message({ data: JSON.stringify({ type: "done", text: "迟到的文字", sessionId }) });
+    await flushPage();
+    expect(page.data.draft).toBe("先前留下的未提交文字");
+    expect(page.data.cards).toHaveLength(0);
+    expect(captures).toBe(0);
+    expect(socket.closed).toBe(true);
+    page.onUnload();
+  });
+  it("auto-submits an image once, preserves its bytes on failure and retries with the same key", async () => {
+    const writes: any[] = [];
+    let choices = 0;
+    const page = mount(
+      (options) => {
+        if (options.url.endsWith("/capabilities"))
+          success(options, {
+            text: true,
+            image: true,
+            voice: true,
+            provider: "qwen",
+            reason: null,
+          });
+        else if (options.method === "POST") {
+          writes.push(options);
+          if (writes.length === 1) options.fail({ errMsg: "offline" });
+          else
+            success(options, {
+              captureId: randomUUID(),
+              status: "UPLOADED",
+              accepted: true,
+              replayed: true,
+            });
+        } else success(options, []);
+      },
+      false,
+      "home",
+      {
+        chooseMedia: ({ success }: any) => {
+          choices++;
+          success({ tempFiles: [{ tempFilePath: "/tmp/photo.jpg", size: 10 }] });
+        },
+        getFileSystemManager: () => ({
+          readFile: ({ success }: any) => success({ data: "/9j/AAAA" }),
+        }),
+      },
+    );
+    page.openCapture();
+    await page.chooseImage();
+    await flushPage();
+    expect(writes).toHaveLength(1);
+    expect(page.data.cards[0].phase).toBe("FAILED_LOCAL");
+    expect(page.runtime.image.base64).toBe("/9j/AAAA");
+    expect(page.data.imagePath).toBe("/tmp/photo.jpg");
+    expect(page.toasts).toHaveLength(0);
+    page.retryCapture();
+    await flushPage();
+    expect(writes).toHaveLength(2);
+    expect(choices).toBe(1);
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.toasts[0].title).toBe("收纳好了");
+    page.onUnload();
   });
 });

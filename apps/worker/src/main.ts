@@ -27,13 +27,21 @@ async function run() {
       event: "worker_started",
       worker_id: worker.workerId,
       provider: gateway.providerName,
+      concurrency: 2,
     }),
   );
-  try {
+  // Reserve one runner for new input and feedback so old-data AI repair cannot fill both slots.
+  const runners = Array.from({ length: 2 }, async (_, index) => {
     while (!stopping) {
-      if (!(await worker.processNext())) await new Promise((resolve) => setTimeout(resolve, 800));
+      if (!(await worker.processNext(index === 1)))
+        await new Promise((resolve) => setTimeout(resolve, 250));
     }
+  });
+  try {
+    await Promise.all(runners);
   } finally {
+    stopping = true;
+    await Promise.allSettled(runners);
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);
     await pool.end();

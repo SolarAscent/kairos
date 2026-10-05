@@ -89,6 +89,12 @@ export class AuthGuard implements CanActivate {
     if (!authorization?.startsWith("Bearer "))
       throw new UnauthorizedException({ code: "AUTH_REQUIRED" });
     const user = verifyAccessToken(authorization.slice(7));
+    await this.assertActive(user);
+    request.user = user;
+    return true;
+  }
+
+  async assertActive(user: AuthenticatedUser) {
     const [session] = await this.db
       .select({ id: authSessions.id })
       .from(authSessions)
@@ -105,7 +111,5 @@ export class AuthGuard implements CanActivate {
       )
       .limit(1);
     if (!session) throw new UnauthorizedException({ code: "SESSION_REVOKED" });
-    request.user = user;
-    return true;
   }
 }

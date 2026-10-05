@@ -1,8 +1,15 @@
+import {
+  DomesticModelProvider,
+  domesticConfiguration,
+  type ModelCaptureInput,
+} from "./domestic.js";
+export * from "./domestic.js";
 import { z } from "zod";
 import { captureParseResultSchema, type CaptureParseResult } from "@life/contracts";
 
 export interface ModelGateway {
-  parseCapture(text: string): Promise<CaptureParseResult>;
+  parseCapture(input: string | ModelCaptureInput): Promise<CaptureParseResult>;
+  modelForInput?(input: string | ModelCaptureInput): string;
   readonly providerName: string;
   readonly modelName: string;
 }
@@ -25,7 +32,9 @@ export class MockModelProvider implements ModelGateway {
   readonly providerName = "mock";
   readonly modelName = "mock-rules-v0.2";
 
-  async parseCapture(text: string): Promise<CaptureParseResult> {
+  async parseCapture(input: string | ModelCaptureInput): Promise<CaptureParseResult> {
+    if (typeof input !== "string" && input.image) throw new Error("MODEL_IMAGE_UNSUPPORTED");
+    const text = typeof input === "string" ? input : input.text;
     const kind = guessKind(text);
     const title = cleanTitle(text);
     return captureParseResultSchema.parse({
@@ -66,7 +75,9 @@ export class OpenAIResponsesProvider implements ModelGateway {
   ) {}
   readonly providerName = "openai-responses";
 
-  async parseCapture(text: string): Promise<CaptureParseResult> {
+  async parseCapture(input: string | ModelCaptureInput): Promise<CaptureParseResult> {
+    if (typeof input !== "string" && input.image) throw new Error("MODEL_IMAGE_UNSUPPORTED");
+    const text = typeof input === "string" ? input : input.text;
     const schema = z.toJSONSchema(captureParseResultSchema);
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -101,6 +112,8 @@ export class OpenAIResponsesProvider implements ModelGateway {
 }
 
 export function createModelGateway(env: NodeJS.ProcessEnv): ModelGateway {
+  if (env.MODEL_PROVIDER === "qwen" || env.MODEL_PROVIDER === "glm")
+    return new DomesticModelProvider(domesticConfiguration(env));
   if (env.MODEL_PROVIDER === "openai-responses") {
     if (!env.OPENAI_API_KEY || !env.OPENAI_MODEL)
       throw new Error("OPENAI_PROVIDER_CONFIGURATION_MISSING");

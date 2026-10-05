@@ -79,7 +79,7 @@ HTTPS 使用 `infra/Caddyfile.wechat-staging.example` 的独立站点块。先�
 
 为 API 配置有效 HTTPS 域名及证书，在微信控制台按最新要求配置 request 合法域名和适用的隐私说明。确认 API 可以访问微信服务，API 和 Worker 可经私网访问同一 PostgreSQL。生产数据库不对公网开放。纯 wx.request 接入不需要浏览器 CORS 豁免；网页 Demo 的跨域配置另行管理。
 
-当前客户端只调用文本相关 API，不需要提前开通 COS、ASR、LBS，不请求定位、相册、录音或手机号权限。当前没有 `wx.cloud.callContainer` 通道，使用 HTTPS + wx.request；如果后续选择云托管专用调用，应新增 transport adapter 并独立验收。
+2026-10-05 更新：文本、图片、流式语音输入及腾讯地图 WebService 已接入测试环境。录音与位置仅由用户主动操作触发，地图 Key 和模型密钥仅供服务端使用。地址解析、坐标保存及双向步行路线已通过真实服务验收，手机定位及正式发布所需的平台隐私配置仍须分别验证，详见[腾讯地图接入说明](tencent-map-setup-2026-10-05.md)与[多模态接入说明](domestic-multimodal-2026-10-05.md)。当前没有 `wx.cloud.callContainer` 通道，使用 HTTPS + wx.request 及语音 WebSocket；如果后续选择云托管专用调用，应新增 transport adapter 并独立验收。
 
 尚未实现发布上传自动化；取得 AppID、代码上传密钥和测试环境后再配置 miniprogram-ci。不要将构建通过理解为发布条件齐备：完整隐私设置、账号删除／导出、生产限流和 RLS 等仍在后续计划。
 

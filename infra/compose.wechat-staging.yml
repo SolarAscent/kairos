@@ -68,6 +68,17 @@ services:
       WECHAT_MOCK_LOGIN: "false"
       WECHAT_APP_ID: ${WECHAT_APP_ID:?Set the mini-program AppID}
       WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:?Set the server-only AppSecret}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-mock}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_WORKSPACE_ID: ${DASHSCOPE_WORKSPACE_ID:-}
+      QWEN_TEXT_MODEL: ${QWEN_TEXT_MODEL:-qwen3.7-flash-2026-07-15}
+      QWEN_VISION_MODEL: ${QWEN_VISION_MODEL:-qwen3.7-flash-2026-07-15}
+      QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-flash-realtime}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      GLM_TEXT_MODEL: ${GLM_TEXT_MODEL:-glm-4.7-flash}
+      GLM_VISION_MODEL: ${GLM_VISION_MODEL:-glm-4.6v-flash}
+      TENCENT_LBS_KEY: ${TENCENT_LBS_KEY:-}
+      TENCENT_LBS_SECRET: ${TENCENT_LBS_SECRET:-}
       NODE_OPTIONS: --max-old-space-size=320
     ports:
       - "127.0.0.1:3100:3000"
@@ -90,8 +101,17 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://kairos:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/kairos_staging
-      MODEL_PROVIDER: mock
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-mock}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_WORKSPACE_ID: ${DASHSCOPE_WORKSPACE_ID:-}
+      QWEN_TEXT_MODEL: ${QWEN_TEXT_MODEL:-qwen3.7-flash-2026-07-15}
+      QWEN_VISION_MODEL: ${QWEN_VISION_MODEL:-qwen3.7-flash-2026-07-15}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      GLM_TEXT_MODEL: ${GLM_TEXT_MODEL:-glm-4.7-flash}
+      GLM_VISION_MODEL: ${GLM_VISION_MODEL:-glm-4.6v-flash}
       NODE_OPTIONS: --max-old-space-size=256
+      TENCENT_LBS_KEY: ${TENCENT_LBS_KEY:-}
+      TENCENT_LBS_SECRET: ${TENCENT_LBS_SECRET:-}
     mem_limit: 384m
     cpus: 0.25
     stop_grace_period: 30s

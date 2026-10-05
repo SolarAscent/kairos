@@ -75,14 +75,118 @@ export const loginRequestSchema = z.object({
 
 export const refreshRequestSchema = z.object({ refreshToken: z.string().min(32).max(512) });
 
-export const createCaptureRequestSchema = z.object({
-  type: z.literal("TEXT"),
-  text: z.string().trim().min(1).max(5000),
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+export const imageInputSchema = z.strictObject({
+  mimeType: z.enum(["image/jpeg", "image/png"]),
+  base64: z
+    .string()
+    .min(4)
+    .max(Math.ceil(MAX_IMAGE_BYTES / 3) * 4)
+    .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+});
+const captureInputFields = {
   sourceChannel: z.enum(["MINIPROGRAM", "DEMO", "API"]).default("DEMO"),
   language: z.string().max(16).optional(),
+};
+export const createCaptureRequestSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...captureInputFields,
+    type: z.literal("TEXT"),
+    text: z.string().trim().min(1).max(5000),
+  }),
+  z.strictObject({
+    ...captureInputFields,
+    type: z.literal("IMAGE"),
+    text: z.string().trim().max(5000).optional(),
+    image: imageInputSchema,
+  }),
+  z.strictObject({
+    ...captureInputFields,
+    type: z.literal("VOICE"),
+    text: z.string().trim().min(1).max(5000),
+    transcriptionSessionId: uuidSchema,
+  }),
+]);
+export const mediaCapabilitiesSchema = z.object({
+  text: z.boolean(),
+  image: z.boolean(),
+  voice: z.boolean(),
+  provider: z.string(),
+  reason: z.string().nullable(),
 });
+export const voiceSessionResponseSchema = z.object({
+  sessionId: uuidSchema,
+  ticket: z.string(),
+  expiresIn: z.literal(60),
+  socketPath: z.literal("/v1/media/voice/stream"),
+  sampleRate: z.literal(16000),
+  format: z.literal("pcm16"),
+});
+export const voiceServerEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ready"), sessionId: uuidSchema }),
+  z.object({ type: z.literal("partial"), text: z.string() }),
+  z.object({ type: z.literal("final"), text: z.string() }),
+  z.object({ type: z.literal("done"), text: z.string(), sessionId: uuidSchema }),
+  z.object({ type: z.literal("error"), code: z.string() }),
+]);
 
-// Text-demo facets contain descriptions only; verified execution facts need provider/user confirmation.
+export const factPlaceSchema = z.strictObject({
+  name: z.string().max(160).optional(),
+  region: z.string().max(96).optional(),
+  city: z.string().max(96).optional(),
+  province: z.string().max(96).optional(),
+  country: z.string().max(96).optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  coordinateSystem: z.enum(["GCJ02", "WGS84"]).optional(),
+});
+export const structuredLifeFactsSchema = z.strictObject({
+  origin: z.enum(["USER_STATED", "INFERRED"]),
+  evidence: z.string().min(1).max(1200),
+  duration: z
+    .strictObject({
+      minSeconds: z.number().int().nonnegative().max(31536000).nullable().optional(),
+      maxSeconds: z.number().int().nonnegative().max(31536000).nullable().optional(),
+      role: z.enum(["REQUIRED", "AVAILABLE"]).optional(),
+      scope: z.enum(["CURRENT", "OBJECT"]).optional(),
+    })
+    .refine(
+      (value) =>
+        value.minSeconds == null ||
+        value.maxSeconds == null ||
+        value.minSeconds <= value.maxSeconds,
+    )
+    .optional(),
+  money: z
+    .strictObject({
+      minMinor: z.number().int().nonnegative().max(100000000).nullable().optional(),
+      maxMinor: z.number().int().nonnegative().max(100000000).nullable().optional(),
+      currency: z.string().regex(/^[A-Z]{3}$/),
+      role: z.enum(["COST", "BUDGET"]).optional(),
+      scope: z.enum(["CURRENT", "OBJECT"]).optional(),
+    })
+    .refine(
+      (value) =>
+        value.minMinor == null || value.maxMinor == null || value.minMinor <= value.maxMinor,
+    )
+    .optional(),
+  time: z
+    .strictObject({
+      windowStart: z.string().max(96).nullable().optional(),
+      windowEnd: z.string().max(96).nullable().optional(),
+      deadline: z.string().max(96).nullable().optional(),
+      eventStart: z.string().max(96).nullable().optional(),
+      eventEnd: z.string().max(96).nullable().optional(),
+    })
+    .optional(),
+  place: factPlaceSchema.optional(),
+  activityKind: z.enum(["TRAVEL", "LOCAL_OUTING", "HOME", "REMOTE", "OTHER"]).optional(),
+  horizon: z.enum(["IMMEDIATE", "SCHEDULED", "LONG_TERM", "UNKNOWN"]).optional(),
+  originContext: factPlaceSchema.optional(),
+});
+export type StructuredLifeFacts = z.infer<typeof structuredLifeFactsSchema>;
+export type FactPlace = z.infer<typeof factPlaceSchema>;
+// Explicit user statements constrain planning; they never verify routes or opening hours.
 export const parsedFacetSchema = z.strictObject({
   type: facetTypeSchema,
   key: z.string().min(1).max(96),
@@ -90,6 +194,7 @@ export const parsedFacetSchema = z.strictObject({
     intent: z.string().max(96).nullable(),
     description: z.string().max(1200).nullable(),
     verification: z.literal("UNVERIFIED"),
+    facts: structuredLifeFactsSchema.optional(),
   }),
   confidence: z.number().min(0).max(1),
   source: z.enum(["EXTRACTED", "INFERRED"]),
@@ -145,17 +250,100 @@ export const captureParseResultSchema = z
     });
   });
 
+export const nowLocationSchema = z
+  .object({
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
+    coordinateSystem: z.literal("GCJ02").optional(),
+    region: z.string().min(1).max(120).optional(),
+    city: z.string().min(1).max(120).optional(),
+    source: z.enum(["USER_INPUT", "DEVICE", "SAVED_CURRENT", "SAVED_HOME"]),
+    observedAt: z.iso.datetime().optional(),
+    expiresAt: z.iso.datetime().optional(),
+  })
+  .refine(
+    (p) =>
+      (p.latitude == null) === (p.longitude == null) &&
+      (p.latitude == null || p.coordinateSystem === "GCJ02") &&
+      (p.latitude != null || p.region != null || p.city != null),
+    "Location requires paired GCJ02 coordinates or a region",
+  );
+export const decisionCalendarSchema = z.object({
+  isBusy: z.boolean(),
+  availableUntil: z.iso.datetime().optional(),
+  busyUntil: z.iso.datetime().optional(),
+  nextEventAt: z.iso.datetime().optional(),
+  freeMinutesUntilNextEvent: z.number().nonnegative().optional(),
+  effectiveAvailableMinutes: z.number().nonnegative().optional(),
+  eventIds: z.array(uuidSchema).max(200),
+});
 export const nowContextSchema = z.object({
-  availableMinutes: z.number().int().min(1).max(1440).optional(),
+  availableMinutes: z.number().int().min(0).max(1440).optional(),
   budgetMinor: z.number().int().min(0).max(100000000).optional(),
   willingToGoOut: z.boolean().optional(),
   mood: z.enum(["LOW_ENERGY", "NEUTRAL", "CURIOUS", "SOCIAL"]).optional(),
   localTime: z.string().datetime().optional(),
+  location: nowLocationSchema.optional(),
+  serverTime: z.iso.datetime().optional(),
+  timezone: z.string().max(80).optional(),
+  localDate: z.string().optional(),
+  localClock: z.string().optional(),
+  calendar: decisionCalendarSchema.optional(),
+});
+// Clock, calendar and remembered-location provenance are computed by the server.
+export const nowInputContextSchema = nowContextSchema
+  .pick({
+    availableMinutes: true,
+    budgetMinor: true,
+    willingToGoOut: true,
+    mood: true,
+  })
+  .extend({ location: nowLocationSchema.optional() })
+  .refine(
+    (context) => !context.location || ["USER_INPUT", "DEVICE"].includes(context.location.source),
+    "Clients may only provide a current user-input or device location",
+  );
+export const createNowSessionRequestSchema = z.object({
+  context: nowInputContextSchema.default({}),
+  excludeObjectIds: z.array(uuidSchema).max(100).default([]),
+});
+export const actionPlanSchema = z.object({
+  validUntil: z.iso.datetime().optional(),
+  mode: z.enum(["DO", "PREPARE"]),
+  startAt: z.iso.datetime(),
+  endAt: z.iso.datetime(),
+  totalSeconds: z.number().int().nonnegative(),
+  activitySeconds: z.number().int().nonnegative(),
+  travelSeconds: z.number().int().nonnegative(),
+  returnSeconds: z.number().int().nonnegative(),
+  basis: z.enum(["USER_STATED", "VERIFIED_ROUTE", "PLANNING_ESTIMATE", "UNKNOWN"]),
+  steps: z.array(z.string().min(1).max(400)).max(12),
+  requiresGoOut: z.boolean(),
+  targetRegion: z.string().nullable().optional(),
+  verification: z.string(),
+  label: z.string().max(160),
+});
+export const actionProgressSchema = z.object({
+  state: z.enum(["NOT_STARTED", "ACTIVE", "COMPLETED", "CANCELLED"]),
+  startedAt: z.iso.datetime().nullable(),
+  completedAt: z.iso.datetime().nullable(),
+  elapsedSeconds: z.number().int().nonnegative(),
 });
 
-export const createNowSessionRequestSchema = z.object({
-  context: nowContextSchema.default({}),
-  excludeObjectIds: z.array(uuidSchema).max(100).default([]),
+export const answerNowQuestionRequestSchema = z.object({
+  questionId: uuidSchema,
+  optionId: z.string().min(1).max(64),
+});
+export const nowQuestionSchema = z.object({
+  id: uuidSchema,
+  key: z.enum(["AVAILABLE_TIME", "BUDGET", "GO_OUT"]),
+  text: z.string(),
+  options: z
+    .array(z.object({ id: z.string(), label: z.string() }))
+    .min(2)
+    .max(6),
+  sequence: z.number().int().min(1).max(2),
+  maxQuestions: z.literal(2),
 });
 
 export const createFeedbackRequestSchema = z.object({
@@ -170,8 +358,12 @@ export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type CreateCaptureRequest = z.infer<typeof createCaptureRequestSchema>;
 export type CaptureParseResult = z.infer<typeof captureParseResultSchema>;
 export type ParsedLifeObject = z.infer<typeof parsedLifeObjectSchema>;
+export type ActionPlan = z.infer<typeof actionPlanSchema>;
+export type ActionProgress = z.infer<typeof actionProgressSchema>;
 export type NowContext = z.infer<typeof nowContextSchema>;
 export type CreateNowSessionRequest = z.infer<typeof createNowSessionRequestSchema>;
+export type AnswerNowQuestionRequest = z.infer<typeof answerNowQuestionRequestSchema>;
+export type NowQuestion = z.infer<typeof nowQuestionSchema>;
 export type CreateFeedbackRequest = z.infer<typeof createFeedbackRequestSchema>;
 
 export const successEnvelope = <T extends z.ZodType>(data: T) =>
@@ -191,6 +383,8 @@ export const captureResponseSchema = z.object({
   type: captureTypeSchema,
   status: captureStatusSchema,
   text: z.string().nullable(),
+  title: z.string().nullable().default(null),
+  summary: z.string().nullable().default(null),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -205,9 +399,14 @@ export const feedbackAcceptedSchema = z.object({
   eventType: feedbackEventTypeSchema,
   replayedClientEvent: z.boolean(),
   replayed: z.boolean(),
+  progress: actionProgressSchema.optional(),
 });
 export const publicCandidateSchema = z.object({
   lifeObjectId: uuidSchema,
+  actionKey: z.string().optional(),
+  actionMode: z.enum(["DO", "PREPARE"]).optional(),
+  actionTitle: z.string().optional(),
+  requiredSeconds: z.number().nonnegative().nullable().optional(),
   title: z.string(),
   totalScore: z.number(),
   rank: z.number().int().nullable(),
@@ -223,8 +422,10 @@ export const publicCandidateSchema = z.object({
 });
 export const nowResponseSchema = z.object({
   sessionId: uuidSchema,
-  status: z.enum(["QUIET", "RECOMMENDED"]),
+  status: z.enum(["QUIET", "RECOMMENDED", "NEEDS_ANSWER"]),
   replayed: z.boolean(),
+  question: nowQuestionSchema.nullable().default(null),
+  quietReason: z.string().nullable().optional(),
   recommendation: z
     .object({
       id: uuidSchema,
@@ -233,6 +434,8 @@ export const nowResponseSchema = z.object({
       body: z.string(),
       reasonText: z.string(),
       executionType: executionTypeSchema,
+      plan: actionPlanSchema.nullable().optional(),
+      progress: actionProgressSchema.optional(),
       score: z.number(),
     })
     .nullable(),
@@ -268,9 +471,13 @@ export const lifeSectionTitles: Record<z.infer<typeof lifeSectionSchema>, string
   HAPPENED: "已经发生",
 };
 export const lifeBrowseItemSchema = lifeListItemSchema.extend({
+  myRating: z.enum(["LIKE", "DISLIKE", "NONE"]).default("NONE"),
+  preferenceScore: z.number().min(-1).max(1).default(0),
+  objectVersion: z.number().int().positive().optional(),
   nextAt: z.iso.datetime().nullable(),
   expiresAt: z.iso.datetime().nullable(),
   hasLocation: z.boolean(),
+  placeLabel: z.string().max(240).nullable().optional(),
   distanceMeters: z.number().nonnegative().nullable(),
 });
 export const lifeSearchRequestSchema = z
@@ -315,3 +522,92 @@ export type AuthResponse = z.infer<typeof authResponseSchema>;
 export type LifeListItem = z.infer<typeof lifeListItemSchema>;
 export type CaptureResponse = z.infer<typeof captureResponseSchema>;
 export type NowResponse = z.infer<typeof nowResponseSchema>;
+
+export const patchLifeObjectRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(240).optional(),
+    summary: z.string().max(1200).nullable().optional(),
+    status: z.enum(["ACTIVE", "RESOLVED", "ARCHIVED"]).optional(),
+    facts: z
+      .array(
+        z.object({
+          type: facetTypeSchema,
+          key: z.string().min(1).max(96),
+          facts: structuredLifeFactsSchema,
+        }),
+      )
+      .max(24)
+      .optional(),
+  })
+  .refine((input) => Object.keys(input).length > 0, "Provide at least one change");
+export const rebuildFactsAcceptedSchema = z.object({
+  lifeObjectId: uuidSchema,
+  accepted: z.literal(true),
+  replayed: z.boolean(),
+});
+export type PatchLifeObjectRequest = z.infer<typeof patchLifeObjectRequestSchema>;
+
+export const lifeUpdatedSchema = z.object({
+  id: uuidSchema,
+  updated: z.literal(true),
+  objectVersion: z.number().int().positive(),
+  replayed: z.boolean(),
+});
+
+export const locationStatusSchema = z.object({
+  provider: z.literal("TENCENT"),
+  configured: z.boolean(),
+  geocoding: z.boolean(),
+  walkingRoutes: z.boolean(),
+  destinationPersistence: z.literal(true),
+});
+export const locationRefreshRequestSchema = z.object({
+  objectIds: z
+    .array(uuidSchema)
+    .min(1)
+    .max(5)
+    .refine((ids) => new Set(ids).size === ids.length, "Duplicate object IDs"),
+});
+export const locationRefreshAcceptedSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        lifeObjectId: uuidSchema,
+        eventId: uuidSchema.nullable(),
+        status: z.enum(["QUEUED", "PENDING", "NOT_CONFIGURED", "NO_ADDRESS", "ALREADY_LOCATED"]),
+      }),
+    )
+    .min(1)
+    .max(5),
+  replayed: z.boolean(),
+});
+export type LocationRefreshRequest = z.infer<typeof locationRefreshRequestSchema>;
+
+export const lifeRatingSchema = z.enum(["LIKE", "DISLIKE", "NONE"]);
+export const setLifeRatingRequestSchema = z.strictObject({ rating: lifeRatingSchema });
+export const lifeRatingAcceptedSchema = z.object({
+  id: uuidSchema,
+  rating: lifeRatingSchema,
+  updated: z.literal(true),
+  replayed: z.boolean(),
+});
+export const lifeDeletedSchema = z.object({
+  id: uuidSchema,
+  deleted: z.literal(true),
+  replayed: z.boolean(),
+});
+export const lifeDeckRequestSchema = z.strictObject({
+  kind: facetTypeSchema,
+  cursor: z.string().min(1).max(1024).optional(),
+  limit: z.number().int().min(1).max(50).default(20),
+});
+export const lifeDeckResponseSchema = z.object({
+  items: z.array(lifeBrowseItemSchema),
+  nextCursor: z.string().nullable(),
+  asOf: z.iso.datetime(),
+});
+export const lifeStacksResponseSchema = z.array(
+  lifeDeckResponseSchema.extend({ kind: facetTypeSchema, title: z.string() }),
+);
+export type LifeRating = z.infer<typeof lifeRatingSchema>;
+export type LifeDeckRequest = z.infer<typeof lifeDeckRequestSchema>;
