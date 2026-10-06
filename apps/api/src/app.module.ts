@@ -29,11 +29,14 @@ import { HealthController } from "./health.controller.js";
 import { SettingsController } from "./settings/settings.controller.js";
 import { SettingsService } from "./settings/settings.service.js";
 import { UiCapabilitiesController } from "./settings/ui-capabilities.controller.js";
+import { ProfileController } from "./users/profile.controller.js";
+import { ProfileService } from "./users/profile.service.js";
 
 @Module({
   imports: [DatabaseModule],
   controllers: [
     AuthController,
+    ProfileController,
     MediaController,
     CapturesController,
     LifeController,
@@ -49,6 +52,7 @@ import { UiCapabilitiesController } from "./settings/ui-capabilities.controller.
     IdempotencyService,
     AuthGuard,
     AuthService,
+    ProfileService,
     CapturesService,
     LifeService,
     PlaceLocationService,
