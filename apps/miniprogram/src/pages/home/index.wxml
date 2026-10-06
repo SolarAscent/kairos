@@ -18,7 +18,8 @@
           <view wx:if="{{recommendation.plan}}" class="plan-steps"><text wx:for="{{recommendation.plan.steps}}" wx:key="*this">{{item}}</text></view>
           <view class="reason"><text>{{recommendation.reasonText}}</text></view>
           <view wx:if="{{canVerifyRoute && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="route-check">
-            <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">用当前位置核对路程</button>
+            <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">{{routeLocationBusy ? '正在核对…' : '用当前位置核对路程'}}</button>
+            <text wx:if="{{routeStatus}}" class="route-status">{{routeStatus}}</text>
             <text class="route-privacy">位置仅用于本次建议与腾讯地图路线查询</text>
           </view>
           <view class="action-row">
@@ -28,6 +29,8 @@
             <button wx:else class="secondary" data-type="SKIP" bindtap="feedback" disabled="{{busy}}">换一个</button>
           </view>
           <button class="delete-wish" bindtap="deleteWish" disabled="{{busy}}">删除该心愿</button>
+          <text wx:if="{{notice && !sheet}}" class="notice">{{notice}}</text>
+          <text wx:if="{{error && !sheet}}" class="error">{{error}}</text>
         </view>
         <view wx:elif="{{question}}" class="adaptive-question">
           <text class="eyebrow">想了解一点现在的你</text>
@@ -78,8 +81,8 @@
         </view>
         <button class="text-button logout" bindtap="signOut" disabled="{{busy}}">退出登录</button>
       </block>
-      <text wx:if="{{notice}}" class="notice">{{notice}}</text>
-      <text wx:if="{{error && !sheet}}" class="error">{{error}}</text>
+      <text wx:if="{{notice && !(tab === 'now' && recommendation)}}" class="notice">{{notice}}</text>
+      <text wx:if="{{error && !sheet && !(tab === 'now' && recommendation)}}" class="error">{{error}}</text>
     </view>
   </scroll-view>
   <view wx:if="{{userId}}" class="nav-area" style="padding-bottom: {{bottomInset}}px;">

@@ -15,6 +15,7 @@ import {
 } from "@life/contracts";
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
+import { getCurrentLocation } from "../../lib/location";
 import { kindOptions, displayLifeItem, groupLifeItems, type LifeStack } from "../../lib/life";
 
 const { client } = getApp<{ globalData: AppServices }>().globalData;
@@ -391,34 +392,37 @@ Page({
   },
   async setLocation(event: WechatMiniprogram.PickerChange) {
     if (this.data.locating) return;
+    const state = this.runtime;
+    const owner = client.userId;
+    const isCurrent = () =>
+      this.runtime === state && !state.unloaded && !state.hidden && client.userId === owner;
     const index = Number(event.detail.value);
     if (index >= 3) {
       this.updateData({ locating: true, error: "" });
       try {
         await this.currentCenter();
-      } catch {
-        this.updateData({
-          error: "暂时无法获取位置。可在微信设置中允许定位，或选择全部地点继续查看。",
-        });
+      } catch (error) {
+        if (isCurrent())
+          this.updateData({
+            error: `${userMessage(error)} 也可以选择全部地点继续查看。`,
+          });
         return;
       } finally {
         this.updateData({ locating: false });
       }
     } else this.runtime.center = null;
-    if (this.runtime.unloaded) return;
+    if (!isCurrent()) return;
     this.updateData({ locationIndex: index });
     await this.loadItems(true);
   },
   async currentCenter() {
     const state = this.runtime;
+    const owner = client.userId;
     if (state.center && Date.now() - state.center.acquiredAt < 5 * 60000) return state.center;
-    const point = await new Promise<WechatMiniprogram.GetLocationSuccessCallbackResult>(
-      (resolve, reject) => {
-        wx.getLocation({ type: "gcj02", success: resolve, fail: reject });
-      },
-    );
+    const point = await getCurrentLocation();
     const center = { latitude: point.latitude, longitude: point.longitude, acquiredAt: Date.now() };
-    if (!state.unloaded) state.center = center;
+    if (this.runtime === state && !state.unloaded && !state.hidden && client.userId === owner)
+      state.center = center;
     return center;
   },
   async loadItems(reset = false) {

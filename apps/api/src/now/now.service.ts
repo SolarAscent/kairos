@@ -26,6 +26,8 @@ import {
   actionPlanSchema,
   structuredLifeFactsSchema,
   nowQuestionSchema,
+  routeCheckSchema,
+  type RouteCheck,
   type AnswerNowQuestionRequest,
   type CreateNowSessionRequest,
   type NowContext,
@@ -45,6 +47,7 @@ import { ActionPlanService } from "../planning/action-plan.service.js";
 import { DATABASE } from "../common/tokens.js";
 import { IdempotencyService } from "../common/idempotency.service.js";
 import { PreferenceReader } from "../feedback/preference-reader.js";
+import { destinationQueryForObject } from "@life/integrations";
 
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const candidateFields = {
@@ -84,6 +87,24 @@ export class NowService {
       key,
       input,
       async (tx) => {
+        if (input.focusObjectId) {
+          if (input.excludeObjectIds.includes(input.focusObjectId))
+            throw new BadRequestException({ code: "FOCUS_OBJECT_EXCLUDED" });
+          const [focus] = await tx
+            .select({ id: lifeObjects.id })
+            .from(lifeObjects)
+            .where(
+              and(
+                eq(lifeObjects.id, input.focusObjectId),
+                eq(lifeObjects.userId, userId),
+                eq(lifeObjects.status, "ACTIVE"),
+                isNull(lifeObjects.deletedAt),
+              ),
+            )
+            .for("share")
+            .limit(1);
+          if (!focus) throw new NotFoundException({ code: "LIFE_OBJECT_NOT_FOUND" });
+        }
         const sessionId = uuidv7();
         const { context } = await this.contexts.build(userId, input.context, tx);
         await tx.insert(decisionSessions).values({
@@ -92,7 +113,7 @@ export class NowService {
           status: "BUILDING",
           scoringVersion,
           questionPolicyVersion,
-          contextSummary: this.publicContext(context),
+          contextSummary: this.publicContext(context, input.focusObjectId),
           expiresAt: new Date(Date.now() + 2 * 3600000),
         });
         await this.saveContext(tx, userId, sessionId, context);
@@ -103,6 +124,7 @@ export class NowService {
         ];
         if (input.excludeObjectIds.length)
           conditions.push(notInArray(lifeObjects.id, input.excludeObjectIds));
+        if (input.focusObjectId) conditions.push(eq(lifeObjects.id, input.focusObjectId));
         const rows = await tx
           .select(candidateFields)
           .from(lifeObjects)
@@ -142,7 +164,7 @@ export class NowService {
               .where(and(...conditions, inArray(lifeObjects.id, likedIds)))),
           );
         }
-        await this.resolve(tx, userId, sessionId, context, rows, []);
+        await this.resolve(tx, userId, sessionId, context, rows, [], true, input.focusObjectId);
         await this.enqueueLegacyFacts(tx, userId, rows);
         return this.read(tx, userId, sessionId);
       },
@@ -212,6 +234,10 @@ export class NowService {
           .orderBy(desc(contextSnapshots.createdAt), desc(contextSnapshots.id))
           .limit(1);
         const previous = nowContextSchema.parse(snapshot?.context ?? session.contextSummary);
+        const focusObjectId =
+          typeof session.contextSummary.focusObjectId === "string"
+            ? session.contextSummary.focusObjectId
+            : undefined;
         const restoredLocation =
           previous.location &&
           (!previous.location.expiresAt || new Date(previous.location.expiresAt) > new Date())
@@ -241,7 +267,7 @@ export class NowService {
           .where(eq(clarificationRequests.id, question.id));
         await tx
           .update(decisionSessions)
-          .set({ contextSummary: this.publicContext(context) })
+          .set({ contextSummary: this.publicContext(context, focusObjectId) })
           .where(eq(decisionSessions.id, sessionId));
         await this.saveContext(tx, userId, sessionId, context);
         const asked = await tx
@@ -281,6 +307,7 @@ export class NowService {
                   eq(lifeObjects.status, "ACTIVE"),
                   isNull(lifeObjects.deletedAt),
                   inArray(lifeObjects.id, objectIds),
+                  ...(focusObjectId ? [eq(lifeObjects.id, focusObjectId)] : []),
                 ),
               )
           : [];
@@ -292,6 +319,7 @@ export class NowService {
           rows,
           asked.map((item) => item.key),
           input.optionId !== "SKIP",
+          focusObjectId,
         );
         return this.read(tx, userId, sessionId);
       },
@@ -327,11 +355,14 @@ export class NowService {
     rows: DecisionCandidate[],
     askedKeys: string[],
     allowQuestions = true,
+    focusObjectId?: string,
   ) {
     const decisionTime = new Date();
     const preferences = await new PreferenceReader(tx).read(userId, rows, decisionTime);
     rows = rows.map((row) => ({ ...row, ...preferences.get(row.id) }));
-    rows = await this.withFacts(tx, userId, rows, context);
+    const enrichedRows = await this.withFacts(tx, userId, rows, context, focusObjectId);
+    rows = enrichedRows;
+    const routeChecks = new Map(enrichedRows.map((row) => [row.id, row.routeCheck]));
     const ranked = scoreCandidates(rows, context, decisionTime);
     const existing = await tx
       .select({
@@ -370,6 +401,7 @@ export class NowService {
           actionMode: item.actionMode,
           requiredSeconds: item.requiredSeconds,
           plan: this.plans.propose(item, context.timezone),
+          routeCheck: routeChecks.get(item.id) ?? null,
         },
         valueScore: item.valueScore,
         fitScore: item.fitScore,
@@ -554,6 +586,19 @@ export class NowService {
       : null;
     return {
       sessionId,
+      focusObjectId:
+        typeof session.contextSummary.focusObjectId === "string"
+          ? session.contextSummary.focusObjectId
+          : null,
+      routeCheck: (() => {
+        if (sourceUnavailable) return null;
+        const targetId =
+          session.contextSummary.focusObjectId ??
+          visibleRecommendation?.executionPayload.targetLifeObjectId;
+        const target = candidates.find((item) => item.lifeObjectId === targetId);
+        const parsed = routeCheckSchema.safeParse(target?.payload.routeCheck);
+        return parsed.success ? parsed.data : null;
+      })(),
       status: sourceUnavailable ? "QUIET" : session.status,
       quietReason: sourceUnavailable
         ? "这条心愿已删除，可以看看新的建议。"
@@ -597,6 +642,10 @@ export class NowService {
           actionMode: item.payload.actionMode,
           actionTitle: item.payload.headline,
           requiredSeconds: item.payload.requiredSeconds,
+          routeCheck: (() => {
+            const parsed = routeCheckSchema.safeParse(item.payload.routeCheck);
+            return parsed.success ? parsed.data : null;
+          })(),
           totalScore: item.totalScore,
           rank: item.rank,
           filtered: item.hardFilterStatus === "FILTERED",
@@ -612,21 +661,27 @@ export class NowService {
     };
   }
 
-  private publicContext(context: NowContext): NowContext {
+  private publicContext(
+    context: NowContext,
+    focusObjectId?: string,
+  ): NowContext & { focusObjectId?: string } {
     const location = context.location;
-    return nowContextSchema.parse({
-      ...context,
-      location:
-        location && (location.region || location.city)
-          ? {
-              region: location.region,
-              city: location.city,
-              source: location.source,
-              observedAt: location.observedAt,
-              expiresAt: location.expiresAt,
-            }
-          : undefined,
-    });
+    return {
+      ...nowContextSchema.parse({
+        ...context,
+        location:
+          location && (location.region || location.city)
+            ? {
+                region: location.region,
+                city: location.city,
+                source: location.source,
+                observedAt: location.observedAt,
+                expiresAt: location.expiresAt,
+              }
+            : undefined,
+      }),
+      ...(focusObjectId ? { focusObjectId } : {}),
+    };
   }
 
   private async enqueueLegacyFacts(
@@ -678,7 +733,8 @@ export class NowService {
     userId: string,
     rows: DecisionCandidate[],
     context: NowContext,
-  ): Promise<DecisionCandidate[]> {
+    focusObjectId?: string,
+  ): Promise<Array<DecisionCandidate & { routeCheck?: RouteCheck | null }>> {
     if (!rows.length) return rows;
     const ids = rows.map((item) => item.id);
     const links = await tx
@@ -699,6 +755,9 @@ export class NowService {
         objectId: lifeObjectFacets.lifeObjectId,
         data: lifeObjectFacets.data,
         confidence: lifeObjectFacets.confidence,
+        facetType: lifeObjectFacets.facetType,
+        facetKey: lifeObjectFacets.facetKey,
+        originType: lifeObjectFacets.originType,
       })
       .from(lifeObjectFacets)
       .innerJoin(lifeObjects, eq(lifeObjects.id, lifeObjectFacets.lifeObjectId))
@@ -724,22 +783,30 @@ export class NowService {
           const parsed = structuredLifeFactsSchema.safeParse(facet.data.facts);
           return parsed.success ? [parsed.data] : [];
         });
-      return { ...item, actionFacts };
+      const destinationQuery = destinationQueryForObject(
+        item,
+        facets.filter((facet) => attached.has(facet.objectId)),
+      );
+      return { ...item, actionFacts, destinationQuery };
     });
-    // Cheap local ranking limits paid external lookups to the five most useful objects.
-    const topIds = [
-      ...new Set(
-        scoreCandidates(enriched, context)
-          .filter((item) => !item.hardFilterReason)
-          .map((item) => item.id),
-      ),
-    ].slice(0, 5);
+    // Indoor/media actions do not consume the geographic lookup budget.
+    const localRanking = scoreCandidates(enriched, context);
+    const geographicIds = new Set(
+      localRanking.filter((item) => item.requiresGoOut).map((item) => item.id),
+    );
+    const orderedIds = [
+      ...new Set(localRanking.filter((item) => geographicIds.has(item.id)).map((item) => item.id)),
+    ];
+    if (focusObjectId && geographicIds.has(focusObjectId)) {
+      orderedIds.splice(orderedIds.indexOf(focusObjectId), 1);
+      orderedIds.unshift(focusObjectId);
+    }
+    const topIds = orderedIds.slice(0, 5);
     const external = await this.contexts.enrichCandidates(
       context,
-      enriched
-        .filter((item) => topIds.includes(item.id))
+      topIds
+        .map((id) => enriched.find((item) => item.id === id)!)
         .map((item) => {
-          const place = item.actionFacts.find((fact) => fact.place)?.place;
           return {
             id: item.id,
             title: item.title,
@@ -753,9 +820,9 @@ export class NowService {
                   },
                 }
               : {}),
-            address: place?.name,
-            city: place?.city,
-            activityKind: item.actionFacts.find((fact) => fact.activityKind)?.activityKind,
+            address: item.destinationQuery?.address,
+            city: item.destinationQuery?.city,
+            requiresRoute: true,
           };
         }),
     );
@@ -765,6 +832,13 @@ export class NowService {
         destination = result?.destination;
       return {
         ...item,
+        routeCheck: result
+          ? ({ status: result.status, reason: result.reason ?? null } as RouteCheck)
+          : geographicIds.has(item.id)
+            ? ({ status: "NOT_CHECKED", reason: "LOOKUP_LIMIT" } as RouteCheck)
+            : item.id === focusObjectId
+              ? ({ status: "NOT_CHECKED", reason: "NOT_GEOGRAPHIC" } as RouteCheck)
+              : null,
         ...(destination
           ? {
               latitude: destination.latitude,

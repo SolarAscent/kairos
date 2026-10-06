@@ -20,6 +20,7 @@ import {
 } from "@life/contracts";
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
+import { getCurrentLocation, routeUnavailableMessage } from "../../lib/location";
 import {
   capabilitiesSchema,
   chooseCaptureImage,
@@ -149,6 +150,7 @@ function createData() {
     quietReason: "",
     canVerifyRoute: false,
     routeLocationBusy: false,
+    routeStatus: "",
     lifeStacks: [] as LifeStack[],
     lifeStacksLoaded: false,
     lifeStacksLoading: false,
@@ -1104,7 +1106,8 @@ Page({
     state.locationGeneration++;
     state.nowPending = null;
     state.requestLocation = null;
-    if (this.data.routeLocationBusy) this.updateData({ routeLocationBusy: false, busy: false });
+    if (this.data.routeLocationBusy)
+      this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
   },
   async verifyCurrentRoute() {
     const state = this.runtime;
@@ -1118,17 +1121,22 @@ Page({
       return;
     const generation = ++state.locationGeneration;
     const owner = client.userId;
+    const focusObjectId = this.data.recommendation?.targetLifeObjectId;
     const isCurrent = () =>
       !state.unloaded && state.locationGeneration === generation && client.userId === owner;
-    this.updateData({ routeLocationBusy: true, busy: true, error: "", notice: "" });
+    this.updateData({
+      routeLocationBusy: true,
+      busy: true,
+      routeStatus: "正在获取当前位置…",
+      error: "",
+      notice: "",
+    });
     try {
       let point: WechatMiniprogram.GetLocationSuccessCallbackResult;
       try {
-        point = await new Promise<WechatMiniprogram.GetLocationSuccessCallbackResult>(
-          (resolve, reject) => wx.getLocation({ type: "gcj02", success: resolve, fail: reject }),
-        );
-      } catch {
-        if (isCurrent()) this.updateData({ error: "可在微信设置中允许定位，原来的建议还在。" });
+        point = await getCurrentLocation();
+      } catch (error) {
+        if (isCurrent()) this.updateData({ error: userMessage(error) });
         return;
       }
       if (!isCurrent()) return;
@@ -1142,14 +1150,25 @@ Page({
         expiresAt: new Date(observedAt + 2 * 60 * 60 * 1000).toISOString(),
       };
       state.nowPending = state.answerPending = null;
-      await this.requestDecision();
+      this.updateData({ routeStatus: "正在核对去程和返程…" });
+      const result = await this.requestDecision(focusObjectId);
+      if (!isCurrent() || !result) return;
+      if (result.routeCheck?.status === "READY") {
+        const plan = result.recommendation?.plan;
+        this.updateData({
+          notice:
+            plan?.basis === "VERIFIED_ROUTE"
+              ? `往返路线已核对：去程约 ${Math.ceil(plan.travelSeconds / 60)} 分钟，返程约 ${Math.ceil(plan.returnSeconds / 60)} 分钟。`
+              : "往返路线已核对；当前时间或其他条件暂不适合出发，先保留准备建议。",
+        });
+      } else this.updateData({ error: routeUnavailableMessage(result.routeCheck?.reason) });
     } catch (error) {
       if (isCurrent()) this.updateData({ error: userMessage(error) });
     } finally {
-      if (isCurrent()) this.updateData({ routeLocationBusy: false, busy: false });
+      if (isCurrent()) this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
     }
   },
-  async requestDecision() {
+  async requestDecision(focusObjectId?: string) {
     const state = this.runtime;
     if (state.unloaded) return;
     const generation = state.locationGeneration;
@@ -1161,6 +1180,7 @@ Page({
         ? { location: state.requestLocation, willingToGoOut: true }
         : {},
       excludeObjectIds: state.exclusions,
+      ...(focusObjectId ? { focusObjectId } : {}),
     });
     const signature = JSON.stringify(input);
     const pending =
@@ -1187,6 +1207,7 @@ Page({
       quietReason: result.quietReason ?? "",
       canVerifyRoute: needsRouteLocation(result),
     });
+    return result;
   },
   async answerQuestion(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;

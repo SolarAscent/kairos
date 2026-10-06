@@ -65,6 +65,7 @@ export interface LocationCandidate {
   address?: string;
   city?: string;
   activityKind?: string;
+  requiresRoute?: boolean;
 }
 export interface CandidateLocationEnrichment {
   status: "READY" | "UNAVAILABLE";
@@ -575,7 +576,8 @@ export class BuildDecisionContextService {
         (candidate) =>
           candidate.kind === "PLACE" ||
           candidate.activityKind === "LOCAL_OUTING" ||
-          candidate.activityKind === "TRAVEL",
+          candidate.activityKind === "TRAVEL" ||
+          candidate.requiresRoute === true,
       )
       .slice(0, 5);
     const results: Record<string, CandidateLocationEnrichment> = {};
@@ -596,6 +598,11 @@ export class BuildDecisionContextService {
         status: "UNAVAILABLE",
         reason: this.locations.configured ? "ORIGIN_NOT_PRECISE" : "NOT_CONFIGURED",
       };
+    if (context.calendar?.isBusy) {
+      for (const target of targets)
+        results[target.id] = { status: "UNAVAILABLE", reason: "CURRENTLY_BUSY" };
+      return results;
+    }
     if (
       !this.locations.configured ||
       !origin ||
@@ -611,58 +618,63 @@ export class BuildDecisionContextService {
       timer = setTimeout(() => {
         abort.abort();
         resolve();
-      }, 2000);
+      }, 4000);
     });
     const task = async () => {
       while (!abort.signal.aborted && cursor < targets.length) {
         const target = targets[cursor++]!;
         results[target.id] = { status: "UNAVAILABLE", reason: "TIMEOUT" };
-        let destination = isGeoPoint(target.location) ? target.location : undefined;
-        if (!destination) {
-          if (!target.address || !target.city) {
-            results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
-            continue;
+        try {
+          let destination = isGeoPoint(target.location) ? target.location : undefined;
+          if (!destination) {
+            if (!target.address) {
+              results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
+              continue;
+            }
+            const found = await this.locations.geocode(target.address, target.city, abort.signal);
+            if (!found.ok) {
+              if (!abort.signal.aborted)
+                results[target.id] = { status: "UNAVAILABLE", reason: found.reason };
+              continue;
+            }
+            destination = found.value.location;
           }
-          const found = await this.locations.geocode(target.address, target.city, abort.signal);
-          if (!found.ok) {
+          if (abort.signal.aborted) break;
+          const outward = await this.locations.route(origin, destination, abort.signal);
+          if (!outward.ok) {
             if (!abort.signal.aborted)
-              results[target.id] = { status: "UNAVAILABLE", reason: found.reason };
+              results[target.id] = { status: "UNAVAILABLE", reason: outward.reason };
             continue;
           }
-          destination = found.value.location;
-        }
-        if (abort.signal.aborted) break;
-        const outward = await this.locations.route(origin, destination, abort.signal);
-        if (!outward.ok) {
+          const back = await this.locations.route(destination, origin, abort.signal);
+          if (!back.ok) {
+            if (!abort.signal.aborted)
+              results[target.id] = { status: "UNAVAILABLE", reason: back.reason };
+            continue;
+          }
           if (!abort.signal.aborted)
-            results[target.id] = { status: "UNAVAILABLE", reason: outward.reason };
-          continue;
-        }
-        const back = await this.locations.route(destination, origin, abort.signal);
-        if (!back.ok) {
-          if (!abort.signal.aborted)
-            results[target.id] = { status: "UNAVAILABLE", reason: back.reason };
-          continue;
-        }
-        if (!abort.signal.aborted)
-          results[target.id] = {
-            status: "READY",
-            destination,
-            route: {
-              ...outward.value,
-              returnDurationSeconds: back.value.durationSeconds,
-              returnDistanceMeters: back.value.distanceMeters,
-              origin,
+            results[target.id] = {
+              status: "READY",
               destination,
-              expiresAt: new Date(
-                Math.min(
-                  Date.parse(outward.value.expiresAt),
-                  Date.parse(back.value.expiresAt),
-                  validUntil?.getTime() ?? Infinity,
-                ),
-              ).toISOString(),
-            },
-          };
+              route: {
+                ...outward.value,
+                returnDurationSeconds: back.value.durationSeconds,
+                returnDistanceMeters: back.value.distanceMeters,
+                origin,
+                destination,
+                expiresAt: new Date(
+                  Math.min(
+                    Date.parse(outward.value.expiresAt),
+                    Date.parse(back.value.expiresAt),
+                    validUntil?.getTime() ?? Infinity,
+                  ),
+                ).toISOString(),
+              },
+            };
+        } catch {
+          if (!abort.signal.aborted)
+            results[target.id] = { status: "UNAVAILABLE", reason: "PROVIDER_UNAVAILABLE" };
+        }
       }
     };
     try {

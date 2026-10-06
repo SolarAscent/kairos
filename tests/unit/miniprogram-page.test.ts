@@ -764,6 +764,7 @@ describe("Home context and multimodal input interactions", () => {
         source: "DEVICE",
       },
     });
+    expect(writes[1].focusObjectId).toBe(response.recommendation.targetLifeObjectId);
     const location = writes[1].context.location;
     expect(Date.parse(location.expiresAt) - Date.parse(location.observedAt)).toBeLessThanOrEqual(
       7200000,
@@ -774,6 +775,73 @@ describe("Home context and multimodal input interactions", () => {
     page.onHide();
     expect(page.runtime.requestLocation).toBeNull();
     expect(page.runtime.nowPending).toBeNull();
+    page.onUnload();
+  });
+  it("shows progress and map failure beside the same preparation card", async () => {
+    const response = routePreparation();
+    let point: any;
+    let posts = 0;
+    const page = mount(
+      (options) => {
+        posts++;
+        success(
+          options,
+          posts === 1
+            ? response
+            : { ...response, routeCheck: { status: "UNAVAILABLE", reason: "QUOTA_EXCEEDED" } },
+        );
+      },
+      false,
+      "home",
+      {
+        getLocation: (options: any) => {
+          point = options.success;
+        },
+      },
+    );
+    await page.decide();
+    const pending = page.verifyCurrentRoute();
+    expect(page.data.routeStatus).toContain("当前位置");
+    expect(page.data.busy).toBe(true);
+    point({ latitude: 23.1, longitude: 113.2 });
+    await pending;
+    expect(page.data.error).toContain("额度");
+    expect(page.data.recommendation.targetLifeObjectId).toBe(
+      response.recommendation.targetLifeObjectId,
+    );
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.data.routeStatus).toBe("");
+    expect(page.data.busy).toBe(false);
+    page.onUnload();
+  });
+  it("explains a verified route without bypassing time constraints", async () => {
+    const response = routePreparation();
+    let posts = 0;
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          ++posts === 1
+            ? response
+            : {
+                ...response,
+                routeCheck: { status: "READY", reason: null },
+                candidates: response.candidates.map((item) => ({
+                  ...item,
+                  filterReason: "TIME_LIMIT",
+                })),
+              },
+        ),
+      false,
+      "home",
+      { getLocation: (options: any) => options.success({ latitude: 23.1, longitude: 113.2 }) },
+    );
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.data.notice).toContain("往返路线已核对");
+    expect(page.data.notice).toContain("暂不适合出发");
+    expect(page.data.recommendation.plan.mode).toBe("PREPARE");
+    expect(page.data.error).toBe("");
     page.onUnload();
   });
   it("preserves the preparation card when location is denied and never submits a fake location", async () => {

@@ -306,6 +306,7 @@ export const nowInputContextSchema = nowContextSchema
 export const createNowSessionRequestSchema = z.object({
   context: nowInputContextSchema.default({}),
   excludeObjectIds: z.array(uuidSchema).max(100).default([]),
+  focusObjectId: uuidSchema.optional(),
 });
 export const actionPlanSchema = z.object({
   validUntil: z.iso.datetime().optional(),
@@ -401,8 +402,31 @@ export const feedbackAcceptedSchema = z.object({
   replayed: z.boolean(),
   progress: actionProgressSchema.optional(),
 });
+export const routeCheckSchema = z.object({
+  status: z.enum(["READY", "UNAVAILABLE", "NOT_CHECKED"]),
+  reason: z
+    .enum([
+      "NOT_CONFIGURED",
+      "ORIGIN_NOT_PRECISE",
+      "DESTINATION_UNRESOLVED",
+      "TIMEOUT",
+      "RATE_LIMITED",
+      "QUOTA_EXCEEDED",
+      "PROVIDER_REJECTED",
+      "PROVIDER_UNAVAILABLE",
+      "INVALID_LOCATION",
+      "INVALID_RESPONSE",
+      "AMBIGUOUS_ADDRESS",
+      "LOOKUP_LIMIT",
+      "CURRENTLY_BUSY",
+      "NOT_GEOGRAPHIC",
+    ])
+    .nullable(),
+});
+export type RouteCheck = z.infer<typeof routeCheckSchema>;
 export const publicCandidateSchema = z.object({
   lifeObjectId: uuidSchema,
+  routeCheck: routeCheckSchema.nullable().optional(),
   actionKey: z.string().optional(),
   actionMode: z.enum(["DO", "PREPARE"]).optional(),
   actionTitle: z.string().optional(),
@@ -422,6 +446,8 @@ export const publicCandidateSchema = z.object({
 });
 export const nowResponseSchema = z.object({
   sessionId: uuidSchema,
+  focusObjectId: uuidSchema.nullable().optional(),
+  routeCheck: routeCheckSchema.nullable().optional(),
   status: z.enum(["QUIET", "RECOMMENDED", "NEEDS_ANSWER"]),
   replayed: z.boolean(),
   question: nowQuestionSchema.nullable().default(null),

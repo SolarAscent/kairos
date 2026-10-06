@@ -94,4 +94,5 @@
 .route-check { margin-bottom:32rpx; }
 .route-check .secondary { font-size:26rpx; line-height:76rpx; }
 .route-privacy { display:block; margin-top:12rpx; color:#72827B; font-size:23rpx; line-height:1.7; }
+.route-status { color: #233C35; font-size: 25rpx; margin-top: 12rpx; line-height: 1.6; }
 .delete-wish { margin:24rpx auto 0; width:auto !important; padding:8rpx 20rpx; color:#72827B; font-size:23rpx; line-height:52rpx; }

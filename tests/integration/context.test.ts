@@ -812,7 +812,7 @@ describe("bounded explicit-origin travel enrichment", () => {
       expect((await mapper.enrichCandidates({ location }, targets)).a?.status).toBe("UNAVAILABLE");
     expect(calls).toBe(0);
   });
-  it("requires a successful return journey and stops a stalled batch after two seconds", async () => {
+  it("requires a successful return journey and stops a stalled batch after four seconds", async () => {
     let calls = 0;
     const provider: LocationProvider = {
       configured: true,
@@ -847,7 +847,7 @@ describe("bounded explicit-origin travel enrichment", () => {
       context,
       targets,
     );
-    expect(Date.now() - start).toBeLessThan(2300);
+    expect(Date.now() - start).toBeLessThan(4300);
     expect(timeout.a).toEqual({ status: "UNAVAILABLE", reason: "TIMEOUT" });
   });
 });

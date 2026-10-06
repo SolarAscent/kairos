@@ -1,4 +1,12 @@
 const messages: Record<string, string> = {
+  LOCATION_PERMISSION_REQUIRED: "可在微信设置中允许定位，原来的建议还在。",
+  LOCATION_SYSTEM_DISABLED: "请在手机系统设置中开启定位，并允许微信使用位置后重试。",
+  LOCATION_PRIVACY_REQUIRED: "请先在微信中确认位置相关的隐私授权，原来的建议还在。",
+  LOCATION_API_NOT_ALLOWED: "当前位置功能暂时不可用，原来的建议还在。",
+  LOCATION_RATE_LIMITED: "定位请求有些频繁，请稍后再试。",
+  LOCATION_TIMEOUT: "获取位置超时，原来的建议还在，请重试或检查手机定位设置。",
+  LOCATION_INVALID: "没有取得有效位置，原来的建议还在，请重新定位。",
+  LOCATION_UNAVAILABLE: "暂时无法获取位置，原来的建议还在，请检查定位与网络后重试。",
   MEDIA_UNSUPPORTED: "当前微信版本暂不支持选择图片，请更新微信后重试。",
   IMAGE_PERMISSION_REQUIRED: "无法打开相机或相册。请在微信设置中允许访问，或先输入文字。",
   IMAGE_TOO_LARGE: "请选择不超过 2 MB 的图片。",
