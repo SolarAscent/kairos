@@ -418,6 +418,23 @@ export const routeCheckDetailSchema = z.object({
   departureBlocker: z.string().nullable(),
   requiredSeconds: z.number().nonnegative().nullable(),
   availableSeconds: z.number().nonnegative().nullable().optional(),
+  mode: z.enum(["walking", "bicycling", "transit"]).optional(),
+  transitKind: z.enum(["BUS", "SUBWAY", "RAIL", "MIXED"]).optional(),
+  transitMixed: z.boolean().optional(),
+  selectionReason: z
+    .enum([
+      "WALKING_FITS",
+      "FASTER_MODE_FITS",
+      "FASTEST_VERIFIED",
+      "NO_MODE_FITS",
+      "SCENIC_BUS_PREFERENCE",
+    ])
+    .optional(),
+  observedAt: z.iso.datetime().optional(),
+  expiresAt: z.iso.datetime().optional(),
+  returnTimingVerified: z.boolean().optional(),
+  comparisonComplete: z.boolean().optional(),
+  transportCostMinor: z.number().nonnegative().nullable().optional(),
 });
 export type RouteCheckDetail = z.infer<typeof routeCheckDetailSchema>;
 export const routeCheckSchema = z.object({

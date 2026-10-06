@@ -37,10 +37,25 @@ export interface VerifiedPoi {
   uniqueMatches: 1;
   match: "EXACT_NAME" | "EXACT_ADDRESS";
 }
+export type RouteMode = "walking" | "bicycling" | "transit";
+export type TransitKind = "BUS" | "SUBWAY" | "RAIL" | "MIXED";
+export type TransitDurations = Partial<Record<Exclude<TransitKind, "MIXED">, number>>;
+export function dominantTransitKind(durations: TransitDurations): TransitKind {
+  const ranked = Object.entries(durations)
+    .filter(([, duration]) => Number.isFinite(duration) && duration > 0)
+    .sort((a, b) => b[1]! - a[1]!);
+  return ranked.length && (ranked.length === 1 || ranked[0]![1] !== ranked[1]![1])
+    ? (ranked[0]![0] as TransitKind)
+    : "MIXED";
+}
 export interface RouteEstimate {
   durationSeconds: number;
   distanceMeters: number;
-  mode: "walking";
+  mode: RouteMode;
+  /** Exact provider fare in CNY minor units; null means unknown, never free. */
+  costMinor?: number | null;
+  transitKind?: TransitKind;
+  transitDurations?: TransitDurations;
   provider: "TENCENT";
   observedAt: string;
   expiresAt: string;
@@ -60,6 +75,14 @@ export interface LocationProvider {
   readonly configured: boolean;
   geocode(address: string, city?: string, signal?: AbortSignal): Promise<MapResult<GeocodedPlace>>;
   route(from: GeoPoint, to: GeoPoint, signal?: AbortSignal): Promise<MapResult<RouteEstimate>>;
+  routeForMode?(
+    from: GeoPoint,
+    to: GeoPoint,
+    mode: RouteMode,
+    signal?: AbortSignal,
+    departureTime?: Date,
+    options?: { avoidSubway?: boolean },
+  ): Promise<MapResult<RouteEstimate>>;
 }
 export function isGeoPoint(value: unknown): value is GeoPoint {
   if (!value || typeof value !== "object") return false;
@@ -457,29 +480,100 @@ export class TencentLbsAdapter implements LocationProvider {
     to: GeoPoint,
     signal?: AbortSignal,
   ): Promise<MapResult<RouteEstimate>> {
+    return this.routeForMode(from, to, "walking", signal);
+  }
+  async routeForMode(
+    from: GeoPoint,
+    to: GeoPoint,
+    mode: RouteMode,
+    signal?: AbortSignal,
+    departureTime = new Date(),
+    options: { avoidSubway?: boolean } = {},
+  ): Promise<MapResult<RouteEstimate>> {
     if (!this.configured) return { ok: false, reason: "NOT_CONFIGURED" };
     if (!isGeoPoint(from) || !isGeoPoint(to)) return { ok: false, reason: "INVALID_LOCATION" };
     const response = await this.request(
-      "/ws/direction/v1/walking/",
+      `/ws/direction/v1/${mode}/`,
       {
         from: `${from.latitude},${from.longitude}`,
         to: `${to.latitude},${to.longitude}`,
         output: "json",
+        ...(mode === "transit"
+          ? {
+              policy: options.avoidSubway ? "LEAST_TIME,NO_SUBWAY" : "LEAST_TIME",
+              price_unit: "1",
+              driving_estimate: "0",
+              departure_time: String(Math.floor(departureTime.getTime() / 1000)),
+            }
+          : {}),
       },
       signal,
     );
     if (!response.ok) return response;
     const routes = record(response.value.result).routes;
-    const route = record(Array.isArray(routes) ? routes[0] : null);
+    const validRoutes = (Array.isArray(routes) ? routes : [])
+      .map(record)
+      .filter((route) => {
+        if (
+          !nonnegative(route.distance) ||
+          !nonnegative(route.duration) ||
+          route.is_driving_estimate
+        )
+          return false;
+        if (mode !== "transit") return true;
+        const steps = Array.isArray(route.steps) ? route.steps.map(record) : [];
+        const publicSteps = steps.filter((step) => step.mode === "TRANSIT");
+        // The provider may otherwise return walking-only or driving estimates.
+        if (
+          !publicSteps.length ||
+          steps.some(
+            (step) =>
+              !["WALKING", "TRANSIT"].includes(String(step.mode)) ||
+              Boolean(step.is_driving_estimate),
+          )
+        )
+          return false;
+        return publicSteps.every((step) => {
+          const lines = Array.isArray(step.lines) ? step.lines.map(record) : [];
+          const line = lines[0] ?? step;
+          return (
+            ["BUS", "SUBWAY", "RAIL"].includes(String(line.vehicle)) &&
+            line.running_status === 300 &&
+            nonnegative(line.duration) &&
+            (!options.avoidSubway || line.vehicle !== "SUBWAY")
+          );
+        });
+      })
+      .sort((a, b) => Number(a.duration) - Number(b.duration));
+    const route = validRoutes[0] ?? {};
     if (!nonnegative(route.distance) || !nonnegative(route.duration))
       return { ok: false, reason: "INVALID_RESPONSE" };
+    const transitDurations: TransitDurations = {};
+    if (mode === "transit")
+      for (const step of (route.steps as unknown[])
+        .map(record)
+        .filter((step) => step.mode === "TRANSIT")) {
+        const line = Array.isArray(step.lines) ? record(step.lines[0]) : step;
+        const vehicle = line.vehicle as Exclude<TransitKind, "MIXED">;
+        transitDurations[vehicle] =
+          (transitDurations[vehicle] ?? 0) + Math.ceil(Number(line.duration) * 60);
+      }
     const now = new Date();
     return {
       ok: true,
       value: {
         distanceMeters: route.distance,
         durationSeconds: Math.ceil(route.duration * 60),
-        mode: "walking",
+        mode,
+        ...(mode === "transit"
+          ? { transitDurations, transitKind: dominantTransitKind(transitDurations) }
+          : {}),
+        costMinor:
+          mode === "walking"
+            ? 0
+            : mode === "transit" && nonnegative(route.price)
+              ? Math.ceil(route.price)
+              : null,
         provider: "TENCENT",
         observedAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + 5 * 60000).toISOString(),

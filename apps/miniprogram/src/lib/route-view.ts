@@ -44,6 +44,14 @@ export function createRouteView(check: RouteCheck | null | undefined) {
     latitude,
     longitude,
   }));
+  const checkedAt = new Date(detail.observedAt ?? Date.now());
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const transitLabel = detail.transitKind
+    ? { BUS: "公交", SUBWAY: "地铁", RAIL: "火车", MIXED: "混合出行" }[detail.transitKind]
+    : "";
+  const modeLabel = { walking: "步行", bicycling: "骑行", transit: transitLabel }[
+    detail.mode ?? "walking"
+  ];
   return {
     destinationLabel: detail.destinationLabel,
     latitude: detail.destination.latitude,
@@ -56,7 +64,7 @@ export function createRouteView(check: RouteCheck | null | undefined) {
       width: 24,
       height: 30,
       callout: {
-        content: index === 0 ? "当前位置" : detail.destinationLabel,
+        content: index === 0 ? "核对时的位置" : detail.destinationLabel,
         display: "ALWAYS",
         color: "#233C35",
         bgColor: "#FFFFFF",
@@ -65,6 +73,11 @@ export function createRouteView(check: RouteCheck | null | undefined) {
         padding: 5,
       },
     })),
-    durationText: `步行去程约 ${Math.ceil(detail.outwardSeconds / 60)} 分钟 · 返程约 ${Math.ceil(detail.returnSeconds / 60)} 分钟`,
+    durationText: `${modeLabel || "路线"}约 ${Math.ceil(detail.outwardSeconds / 60)} 分钟到达`,
+    selectionText:
+      detail.selectionReason === "SCENIC_BUS_PREFERENCE"
+        ? "用时相近，按你看风景的偏好，这次优先公交。"
+        : "",
+    checkedAtText: `上次核对 ${checkedAt.getFullYear()}-${pad(checkedAt.getMonth() + 1)}-${pad(checkedAt.getDate())} ${pad(checkedAt.getHours())}:${pad(checkedAt.getMinutes())}`,
   };
 }

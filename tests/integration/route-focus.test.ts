@@ -448,4 +448,71 @@ describe("targeted, bounded route checks", () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(2100);
     expect(Date.now() - start).toBeLessThan(4000);
   }, 10000);
+  it("returns only the selected real round trip, keeps its budget/time conditions and replays without new multimode calls", async () => {
+    const user = await owner(),
+      target = await seed(user),
+      key = randomUUID();
+    let modeCalls = 0;
+    provider.routeForMode = async (from, _to, mode) => {
+      modeCalls++;
+      return {
+        ok: true,
+        value: {
+          mode,
+          distanceMeters: mode === "walking" ? 5000 : 6000,
+          durationSeconds:
+            mode === "walking"
+              ? 4020
+              : mode === "bicycling"
+                ? 1800
+                : from.latitude === origin.latitude
+                  ? 900
+                  : 1100,
+          costMinor: mode === "walking" ? 0 : mode === "bicycling" ? null : 200,
+          ...(mode === "transit"
+            ? { transitKind: "SUBWAY", transitDurations: { SUBWAY: 600 } }
+            : {}),
+          provider: "TENCENT",
+          observedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 300000).toISOString(),
+        },
+      };
+    };
+    try {
+      const body = input(target);
+      body.context.budgetMinor = 10000;
+      const state = nowResponseSchema.parse(
+        (await req("POST", "/v1/now/sessions", user, body, key)).json().data,
+      );
+      expect(modeCalls).toBe(6);
+      expect(state.routeCheck?.detail).toMatchObject({
+        mode: "transit",
+        transitKind: "SUBWAY",
+        outwardSeconds: 900,
+        returnSeconds: 1100,
+        requiredSeconds: 2600,
+        transportCostMinor: 400,
+        returnTimingVerified: true,
+        departureBlocker: null,
+        selectionReason: "FASTER_MODE_FITS",
+        comparisonComplete: true,
+      });
+      expect(state.recommendation?.plan?.mode).toBe("DO");
+      expect(
+        (await req("POST", "/v1/now/sessions", user, body, key)).json().data.routeCheck.detail,
+      ).toMatchObject({ mode: "transit", transitKind: "SUBWAY" });
+      expect(modeCalls).toBe(6);
+      const noBudget = nowResponseSchema.parse(
+        (await req("POST", "/v1/now/sessions", user, input(target))).json().data,
+      );
+      expect(noBudget.routeCheck?.detail).toMatchObject({
+        mode: "walking",
+        departureBlocker: "TIME_LIMIT",
+        selectionReason: "NO_MODE_FITS",
+      });
+      expect(noBudget.recommendation?.plan?.mode).toBe("PREPARE");
+    } finally {
+      delete provider.routeForMode;
+    }
+  });
 });

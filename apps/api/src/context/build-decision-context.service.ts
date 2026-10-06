@@ -12,13 +12,15 @@ import {
   type Database,
 } from "@life/db";
 import type { NowContext } from "@life/contracts";
-import { normalizeLifeTime } from "@life/domain";
+import { normalizeLifeTime, selectRouteForWindow } from "@life/domain";
 import {
   isGeoPoint,
   TencentLbsAdapter,
+  dominantTransitKind,
   type GeoPoint,
   type LocationProvider,
   type RouteEstimate,
+  type RouteMode,
 } from "@life/integrations";
 import { DATABASE } from "../common/tokens.js";
 
@@ -66,6 +68,8 @@ export interface LocationCandidate {
   city?: string;
   activityKind?: string;
   requiresRoute?: boolean;
+  activitySeconds?: number | null;
+  activityCostMinor?: number | null;
 }
 export interface CandidateLocationEnrichment {
   status: "READY" | "UNAVAILABLE";
@@ -76,6 +80,15 @@ export interface CandidateLocationEnrichment {
     returnDistanceMeters: number;
     origin: GeoPoint;
     destination: GeoPoint;
+    returnTimingVerified: boolean;
+    comparisonComplete: boolean;
+    selectionReason:
+      | "WALKING_FITS"
+      | "FASTER_MODE_FITS"
+      | "FASTEST_VERIFIED"
+      | "NO_MODE_FITS"
+      | "SCENIC_BUS_PREFERENCE";
+    transitMixed?: boolean;
   };
 }
 function object(value: unknown): Record<string, unknown> {
@@ -570,6 +583,7 @@ export class BuildDecisionContextService {
   async enrichCandidates(
     context: NowContext,
     candidates: LocationCandidate[],
+    options: { compareModesForId?: string; preferScenicBus?: boolean } = {},
   ): Promise<Record<string, CandidateLocationEnrichment>> {
     const targets = candidates
       .filter(
@@ -640,28 +654,142 @@ export class BuildDecisionContextService {
             destination = found.value.location;
           }
           if (abort.signal.aborted) break;
-          const outward = await this.locations.route(origin, destination, abort.signal);
-          if (!outward.ok) {
-            if (!abort.signal.aborted)
-              results[target.id] = { status: "UNAVAILABLE", reason: outward.reason };
-            continue;
-          }
-          const back = await this.locations.route(destination, origin, abort.signal);
-          if (!back.ok) {
-            if (!abort.signal.aborted)
-              results[target.id] = { status: "UNAVAILABLE", reason: back.reason };
-            continue;
-          }
-          if (!abort.signal.aborted)
-            results[target.id] = {
-              status: "READY",
-              destination,
-              route: {
+          const modes: RouteMode[] =
+            target.id === options.compareModesForId && this.locations.routeForMode
+              ? ["walking", "bicycling", "transit"]
+              : ["walking"];
+          const routes: NonNullable<CandidateLocationEnrichment["route"]>[] = [];
+          let requestedRoundTrips = modes.length;
+          const departure = new Date();
+          const limits = [
+            context.availableMinutes,
+            context.calendar?.effectiveAvailableMinutes,
+            context.calendar?.freeMinutesUntilNextEvent,
+          ]
+            .filter(
+              (value): value is number => value != null && Number.isFinite(value) && value >= 0,
+            )
+            .map((minutes) => minutes * 60);
+          if (context.calendar?.availableUntil)
+            limits.push(
+              Math.max(
+                0,
+                (Date.parse(context.calendar.availableUntil) - departure.getTime()) / 1000,
+              ),
+            );
+          const available = limits.length ? Math.min(...limits) : null;
+          const budget =
+            context.budgetMinor == null
+              ? null
+              : Math.max(0, context.budgetMinor - (target.activityCostMinor ?? 0));
+          const publish = () => {
+            const selection = selectRouteForWindow(
+              routes,
+              target.activitySeconds ?? null,
+              available,
+              budget,
+              options.preferScenicBus,
+            );
+            if (selection)
+              results[target.id] = {
+                status: "READY",
+                destination,
+                route: {
+                  ...selection.route,
+                  selectionReason: selection.reason,
+                  comparisonComplete: routes.length === requestedRoundTrips,
+                },
+              };
+          };
+          const checkMode = async (mode: RouteMode, avoidSubway = false) => {
+            try {
+              const request = (from: GeoPoint, to: GeoPoint, at: Date) =>
+                this.locations.routeForMode
+                  ? this.locations.routeForMode(from, to, mode, abort.signal, at, { avoidSubway })
+                  : this.locations.route(from, to, abort.signal);
+              const outward = await request(origin, destination!, departure);
+              if (!outward.ok) {
+                if (!routes.length && !abort.signal.aborted)
+                  results[target.id] = { status: "UNAVAILABLE", reason: outward.reason };
+                return;
+              }
+              if (abort.signal.aborted) return;
+              const valid = (value: RouteEstimate) =>
+                value.mode === mode &&
+                Number.isFinite(value.durationSeconds) &&
+                value.durationSeconds >= 0 &&
+                Number.isFinite(value.distanceMeters) &&
+                value.distanceMeters >= 0 &&
+                (value.costMinor == null ||
+                  (Number.isFinite(value.costMinor) && value.costMinor >= 0)) &&
+                (mode !== "transit" ||
+                  ["BUS", "SUBWAY", "RAIL", "MIXED"].includes(value.transitKind ?? ""));
+              if (!valid(outward.value)) {
+                if (!routes.length)
+                  results[target.id] = { status: "UNAVAILABLE", reason: "INVALID_RESPONSE" };
+                return;
+              }
+              const returnDeparture =
+                mode === "transit" && target.activitySeconds != null
+                  ? new Date(
+                      departure.getTime() +
+                        (outward.value.durationSeconds + target.activitySeconds) * 1000,
+                    )
+                  : departure;
+              const back = await request(destination!, origin, returnDeparture);
+              if (!back.ok) {
+                if (!routes.length && !abort.signal.aborted)
+                  results[target.id] = { status: "UNAVAILABLE", reason: back.reason };
+                return;
+              }
+              if (abort.signal.aborted) return;
+              if (!valid(back.value)) {
+                if (!routes.length)
+                  results[target.id] = { status: "UNAVAILABLE", reason: "INVALID_RESPONSE" };
+                return;
+              }
+              const cost =
+                mode === "walking"
+                  ? 0
+                  : outward.value.costMinor != null && back.value.costMinor != null
+                    ? outward.value.costMinor + back.value.costMinor
+                    : null;
+              const weights = {
+                BUS:
+                  (outward.value.transitDurations?.BUS ?? 0) +
+                  (back.value.transitDurations?.BUS ?? 0),
+                SUBWAY:
+                  (outward.value.transitDurations?.SUBWAY ?? 0) +
+                  (back.value.transitDurations?.SUBWAY ?? 0),
+                RAIL:
+                  (outward.value.transitDurations?.RAIL ?? 0) +
+                  (back.value.transitDurations?.RAIL ?? 0),
+              };
+              const hasWeights = Object.values(weights).some((seconds) => seconds > 0);
+              const transitKind = hasWeights
+                ? dominantTransitKind(weights)
+                : outward.value.transitKind === back.value.transitKind
+                  ? outward.value.transitKind
+                  : "MIXED";
+              routes.push({
                 ...outward.value,
+                ...(mode === "transit"
+                  ? {
+                      transitKind,
+                      transitDurations: weights,
+                      transitMixed:
+                        Object.values(weights).filter((seconds) => seconds > 0).length > 1 ||
+                        outward.value.transitKind !== back.value.transitKind,
+                    }
+                  : {}),
+                costMinor: cost,
                 returnDurationSeconds: back.value.durationSeconds,
                 returnDistanceMeters: back.value.distanceMeters,
+                returnTimingVerified: mode !== "transit" || target.activitySeconds != null,
+                comparisonComplete: false,
+                selectionReason: "FASTEST_VERIFIED",
                 origin,
-                destination,
+                destination: destination!,
                 expiresAt: new Date(
                   Math.min(
                     Date.parse(outward.value.expiresAt),
@@ -669,8 +797,35 @@ export class BuildDecisionContextService {
                     validUntil?.getTime() ?? Infinity,
                   ),
                 ).toISOString(),
-              },
-            };
+              });
+              publish();
+            } catch {
+              if (!routes.length && !abort.signal.aborted)
+                results[target.id] = { status: "UNAVAILABLE", reason: "PROVIDER_UNAVAILABLE" };
+            }
+          };
+          // Establish a walking fallback before spending up to four extra calls.
+          await checkMode("walking");
+          if (!abort.signal.aborted && modes.length > 1)
+            await Promise.all([checkMode("bicycling"), checkMode("transit")]);
+          const transit = routes.find((route) => route.mode === "transit");
+          // An explicit/learned scenery preference may justify one additional bus-only round trip.
+          if (
+            !abort.signal.aborted &&
+            modes.length > 1 &&
+            options.preferScenicBus &&
+            transit &&
+            transit.transitKind !== "BUS" &&
+            target.activitySeconds != null &&
+            available != null &&
+            transit.durationSeconds + transit.returnDurationSeconds + target.activitySeconds <=
+              available &&
+            (budget == null || (transit.costMinor != null && transit.costMinor <= budget))
+          ) {
+            requestedRoundTrips++;
+            publish();
+            await checkMode("transit", true);
+          }
         } catch {
           if (!abort.signal.aborted)
             results[target.id] = { status: "UNAVAILABLE", reason: "PROVIDER_UNAVAILABLE" };

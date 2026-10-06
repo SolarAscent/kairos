@@ -4,7 +4,7 @@ import scoringConfig from "./config/now-engine-v0.3.json" with { type: "json" };
 export const scoringVersion = scoringConfig.version;
 export const interventionThreshold = scoringConfig.intervention_threshold;
 
-export { planActions, planningFacts } from "./planning.js";
+export { planActions, planningFacts, selectRouteForWindow } from "./planning.js";
 export type {
   PlanningFacts,
   PlanningPlace,

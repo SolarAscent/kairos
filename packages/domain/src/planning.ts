@@ -43,6 +43,15 @@ export interface VerifiedRoute {
   returnDurationSeconds?: number | null;
   distanceMeters?: number | null;
   returnDistanceMeters?: number | null;
+  costMinor?: number | null;
+  returnTimingVerified?: boolean;
+  transitKind?: "BUS" | "SUBWAY" | "RAIL" | "MIXED";
+  selectionReason?:
+    | "WALKING_FITS"
+    | "FASTER_MODE_FITS"
+    | "FASTEST_VERIFIED"
+    | "NO_MODE_FITS"
+    | "SCENIC_BUS_PREFERENCE";
   mode: string;
   provider: string;
   observedAt: string | Date;
@@ -377,6 +386,19 @@ function filterAction(
         : "ROUTE_UNVERIFIED";
   }
   if (action.requiredSeconds == null) return "DURATION_UNKNOWN";
+  if (
+    action.requiresGoOut &&
+    candidate.route?.mode === "transit" &&
+    candidate.route.returnTimingVerified === false
+  )
+    return "ROUTE_UNVERIFIED";
+  if (
+    action.requiresGoOut &&
+    candidate.route?.mode !== "walking" &&
+    candidate.route?.costMinor == null &&
+    context.budgetMinor != null
+  )
+    return "COST_UNKNOWN";
   if (action.requiredCostMinMinor == null && context.budgetMinor != null) return "COST_UNKNOWN";
   return null;
 }
@@ -388,6 +410,66 @@ export function availableMinutes(context: PlanningContext) {
     context.calendar?.freeMinutesUntilNextEvent,
   ].filter((value): value is number => value != null && finiteNonnegative(value));
   return limits.length ? Math.min(...limits) : null;
+}
+/** Select only complete provider-verified round trips, without inventing activity time or fares. */
+export function selectRouteForWindow<
+  T extends {
+    mode: string;
+    durationSeconds: number;
+    returnDurationSeconds: number;
+    costMinor?: number | null;
+    transitKind?: string;
+  },
+>(
+  routes: T[],
+  activitySeconds: number | null,
+  availableSeconds: number | null,
+  budgetMinor: number | null,
+  preferScenicBus = false,
+) {
+  const ordered = routes
+    .filter(
+      (route) =>
+        finiteNonnegative(route.durationSeconds) && finiteNonnegative(route.returnDurationSeconds),
+    )
+    .sort(
+      (a, b) =>
+        a.durationSeconds +
+          a.returnDurationSeconds -
+          (b.durationSeconds + b.returnDurationSeconds) || a.mode.localeCompare(b.mode),
+    );
+  if (!ordered.length) return null;
+  const affordable = ordered.filter(
+    (route) =>
+      budgetMinor == null || (finiteNonnegative(route.costMinor) && route.costMinor <= budgetMinor),
+  );
+  const candidates = affordable.length ? affordable : ordered;
+  const completeWindowKnown = activitySeconds != null && availableSeconds != null;
+  const fits = completeWindowKnown
+    ? affordable.filter(
+        (route) =>
+          route.durationSeconds + route.returnDurationSeconds + activitySeconds <= availableSeconds,
+      )
+    : [];
+  const shortWalk = fits.find((route) => route.mode === "walking" && route.durationSeconds <= 600);
+  if (shortWalk) return { route: shortWalk, reason: "WALKING_FITS" as const };
+  if (preferScenicBus && fits.length) {
+    const fastest = fits[0]!;
+    const seconds = fastest.durationSeconds + fastest.returnDurationSeconds;
+    const bus = fits.find(
+      (route) =>
+        route.mode === "transit" &&
+        route.transitKind === "BUS" &&
+        route.durationSeconds + route.returnDurationSeconds <= seconds + 600 &&
+        route.durationSeconds + route.returnDurationSeconds <= seconds * 1.2,
+    );
+    if (bus && bus !== fastest) return { route: bus, reason: "SCENIC_BUS_PREFERENCE" as const };
+  }
+  if (fits.length) return { route: fits[0]!, reason: "FASTER_MODE_FITS" as const };
+  return {
+    route: candidates[0]!,
+    reason: completeWindowKnown ? ("NO_MODE_FITS" as const) : ("FASTEST_VERIFIED" as const),
+  };
 }
 /** Generate bounded actions with their own costs and duration, not renamed goals. */
 export function planActions(
@@ -412,6 +494,14 @@ export function planActions(
     requiresGoOut && verifiedRoute ? candidate.route!.returnDurationSeconds! : 0;
   const totalSeconds =
     facts.requiredSeconds == null ? null : facts.requiredSeconds + travelSeconds + returnSeconds;
+  const transportCost =
+    requiresGoOut && verifiedRoute
+      ? (candidate.route!.costMinor ?? (candidate.route!.mode === "walking" ? 0 : null))
+      : 0;
+  const totalCostMin =
+    facts.costMinMinor == null ? null : facts.costMinMinor + (transportCost ?? 0);
+  const totalCostMax =
+    facts.costMaxMinor == null || transportCost == null ? null : facts.costMaxMinor + transportCost;
   const targetRegion = facts.place?.province ?? facts.place?.region ?? facts.place?.city ?? null;
   const basis: DurationBasis =
     requiresGoOut && verifiedRoute
@@ -454,14 +544,14 @@ export function planActions(
     actionMode: "DO",
     requiredSeconds: totalSeconds,
     durationBasis: basis,
-    requiredCostMinMinor: facts.costMinMinor,
-    requiredCostMaxMinor: facts.costMaxMinor,
+    requiredCostMinMinor: totalCostMin,
+    requiredCostMaxMinor: totalCostMax,
     requiresGoOut,
     headline: requiresGoOut ? `按已核验行程去「${candidate.title}」` : `完成「${candidate.title}」`,
     body:
       totalSeconds == null
         ? "实际所需时长还没有确认。"
-        : `给这次行动留出 ${Math.ceil(totalSeconds / 60)} 分钟${requiresGoOut ? "，包括去程、活动和返程" : ""}。${requiresGoOut && availability?.status !== "AVAILABLE" ? "路线核验仅涵盖交通，营业与入场条件尚未核实，出发前请确认。" : ""}`,
+        : `给这次行动留出 ${Math.ceil(totalSeconds / 60)} 分钟${requiresGoOut ? "，包括去程、活动和返程" : ""}。${requiresGoOut && candidate.route?.mode === "bicycling" ? "骑行需要可用自行车；自行车获取与租赁费用尚未核实。" : ""}${requiresGoOut && availability?.status !== "AVAILABLE" ? "路线核验仅涵盖交通，营业与入场条件尚未核实，出发前请确认。" : ""}`,
     reasonText: requiresGoOut
       ? "这项行动来自你的记录；交通核验不代表营业、预约或入场条件已经核实。"
       : "这项行动来自你的记录；按已知的时间和费用条件安排。",
@@ -471,6 +561,26 @@ export function planActions(
     directness: 1,
   };
   direct.filterReason = filterAction(direct, candidate, context, at, facts);
+  const transitLabel =
+    candidate.route?.transitKind === "BUS"
+      ? "公交"
+      : candidate.route?.transitKind === "SUBWAY"
+        ? "地铁"
+        : candidate.route?.transitKind === "RAIL"
+          ? "火车"
+          : candidate.route?.transitKind === "MIXED"
+            ? "换乘路线"
+            : "路线";
+  const transportCaution =
+    requiresGoOut && verifiedRoute && candidate.route?.mode === "bicycling"
+      ? "骑行需要可用自行车；自行车获取与租赁费用尚未核实。"
+      : requiresGoOut &&
+          verifiedRoute &&
+          candidate.route?.mode === "transit" &&
+          candidate.route.returnTimingVerified === false
+        ? `返程${transitLabel}目前仅为参考，确定停留时长后需核对对应返程时段。`
+        : "";
+  if (transportCaution) direct.reasonText += transportCaution;
   const actions: PlannedAction[] = [direct];
   const mediaHint =
     candidate.kind === "MEDIA" ||
@@ -711,7 +821,7 @@ export function planActions(
       headline,
       body: proposal.steps.join("\n"),
       reasonText: departureBlocker
-        ? `${departureBlocker.reason}现在先完成这项准备；准备时段是规划估计。`
+        ? `${candidate.route?.mode === "transit" && candidate.route.returnTimingVerified === false ? departureBlocker.reason.replace("去程和返程已核验", "去程已核验，返程耗时仅供参考") : departureBlocker.reason}${transportCaution}现在先完成这项准备；准备时段是规划估计。`
         : `现在做的是一个独立准备步骤，不是完成「${candidate.title}」。准备时段是规划估计；出发条件仍需确认。`,
       executionType: "START_TIMER",
       plan,

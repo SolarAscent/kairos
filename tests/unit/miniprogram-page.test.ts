@@ -844,7 +844,7 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.error).toBe("");
     page.onUnload();
   });
-  it("displays fresh verified endpoints and original activity blocker without storing device coordinates", async () => {
+  it("retains the completed selected route through native map return and home recreation without storage or another location query", async () => {
     const response = routePreparation();
     const stored: unknown[] = [];
     const opened: any[] = [];
@@ -852,6 +852,9 @@ describe("Home context and multimodal input interactions", () => {
       origin: { latitude: 23.1291, longitude: 113.2644, coordinateSystem: "GCJ02" },
       destination: { latitude: 23.1418, longitude: 113.2859, coordinateSystem: "GCJ02" },
       destinationLabel: "广州购书中心",
+      mode: "bicycling",
+      observedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7200000).toISOString(),
       outwardSeconds: 901,
       returnSeconds: 1040,
       outwardMeters: 1200,
@@ -861,18 +864,24 @@ describe("Home context and multimodal input interactions", () => {
       availableSeconds: 3600,
     };
     let posts = 0;
+    let locations = 0;
     const page = mount(
-      (options) =>
+      (options) => {
+        if (options.method !== "POST") return success(options, []);
         success(
           options,
           ++posts === 1
             ? response
             : { ...response, routeCheck: { status: "READY", reason: null, detail } },
-        ),
+        );
+      },
       false,
       "home",
       {
-        getLocation: (options: any) => options.success(detail.origin),
+        getLocation: (options: any) => {
+          locations++;
+          options.success(detail.origin);
+        },
         setStorageSync: (_key: string, value: unknown) => stored.push(value),
         openLocation: (options: any) => opened.push(options),
       },
@@ -884,8 +893,10 @@ describe("Home context and multimodal input interactions", () => {
       { latitude: 23.1418, longitude: 113.2859 },
     ]);
     expect(page.data.routeView.markers.map((marker: any) => marker.id)).toEqual([1, 2]);
-    expect(page.data.routeView.durationText).toContain("去程约 16 分钟");
-    expect(page.data.routeView.durationText).toContain("返程约 18 分钟");
+    expect(page.data.routeView.durationText).toBe("骑行约 16 分钟到达");
+    expect(page.data.routeView.durationText).not.toContain("返程");
+    expect(page.data.routeView.durationText).not.toContain("步行");
+    expect(page.data.routeView.checkedAtText).toContain("上次核对");
     expect(page.data.departureReason).toContain("你打算在那里待多久");
     expect(page.data.departureReason).not.toContain("暂不适合出发");
     expect(page.data.departureReason).not.toContain("关闭");
@@ -902,14 +913,39 @@ describe("Home context and multimodal input interactions", () => {
       name: "广州购书中心",
     });
     page.onHide();
-    expect(page.data.routeView).toBeNull();
+    expect(page.data.routeView.destinationLabel).toBe("广州购书中心");
     expect(page.data.canVerifyRoute).toBe(true);
-    expect(page.data.departureReason).toBe("");
-    expect(JSON.stringify(page.data)).not.toContain("113.2644");
-    expect(JSON.stringify(page.data)).not.toContain("113.2859");
+    expect(page.runtime.requestLocation).toBeNull();
+    page.onShow();
+    expect(page.data.routeView.destinationLabel).toBe("广州购书中心");
+    expect(posts).toBe(2);
+    expect(locations).toBe(1);
+    const otherTarget = routePreparation().recommendation;
+    page.updateData({ recommendation: otherTarget });
+    expect(page.data.routeView).toBeNull();
+    page.updateData({ recommendation: response.recommendation });
+    expect(page.data.routeView.destinationLabel).toBe("广州购书中心");
     page.openRouteDestination();
-    expect(opened).toHaveLength(1);
+    expect(opened).toHaveLength(2);
     page.onUnload();
+    const recreated = page.openRoute("home");
+    recreated.onShow();
+    expect(
+      recreated.services.routeCache.get(userId, response.recommendation.targetLifeObjectId),
+    ).not.toBeNull();
+    recreated.updateData({ recommendation: response.recommendation });
+    recreated.onShow();
+    expect(recreated.data.routeView.destinationLabel).toBe("广州购书中心");
+    expect(posts).toBe(2);
+    expect(locations).toBe(1);
+    expect(stored).toEqual([]);
+    recreated.services.client.clear();
+    expect(
+      recreated.services.routeCache.get(userId, response.recommendation.targetLifeObjectId),
+    ).toBeNull();
+    recreated.onShow();
+    expect(recreated.data.routeView).toBeNull();
+    recreated.onUnload();
   });
   it("clears a previous map when recommendations change or the account resets", () => {
     const page = mount((options) => success(options, routePreparation()));
@@ -922,6 +958,92 @@ describe("Home context and multimodal input interactions", () => {
     page.resetSessionContent();
     expect(page.data.routeView).toBeNull();
     expect(page.data.departureReason).toBe("");
+    page.onUnload();
+  });
+  it("keeps the last completed map when an explicit update is cancelled, then replaces it only after a new successful query", async () => {
+    const response = routePreparation();
+    let point: any;
+    let posts = 0;
+    const page = mount(
+      (options) => {
+        if (options.method !== "POST") return success(options, []);
+        posts++;
+        success(options, {
+          ...response,
+          routeCheck: {
+            status: "READY",
+            reason: null,
+            detail: {
+              origin: { latitude: 23.1, longitude: 113.2, coordinateSystem: "GCJ02" },
+              destination: { latitude: 23.2, longitude: 113.3, coordinateSystem: "GCJ02" },
+              destinationLabel: "书店",
+              mode: "transit",
+              transitKind: "SUBWAY",
+              outwardSeconds: 600,
+              returnSeconds: 700,
+              outwardMeters: 900,
+              returnMeters: 1000,
+              departureBlocker: "DURATION_UNKNOWN",
+              requiredSeconds: null,
+            },
+          },
+        });
+      },
+      false,
+      "home",
+      {
+        getLocation: (options: any) => {
+          point = options.success;
+        },
+      },
+    );
+    const target = response.recommendation.targetLifeObjectId;
+    page.services.routeCache.set(userId, target, {
+      view: {
+        longitude: 113.4,
+        destinationLabel: "上次的书店",
+        durationText: "建议步行 · 去程约 20 分钟",
+      },
+      departureReason: "需要确认停留时间",
+    });
+    page.updateData({ recommendation: response.recommendation });
+    const cancelled = page.verifyCurrentRoute();
+    expect(page.data.routeStatus).toContain("正在获取当前位置");
+    expect(page.data.routeView.destinationLabel).toBe("上次的书店");
+    page.onHide();
+    point({ latitude: 23.1, longitude: 113.2 });
+    await cancelled;
+    expect(posts).toBe(0);
+    expect(page.data.routeView.destinationLabel).toBe("上次的书店");
+    expect(page.services.routeCache.get(userId, target).view.longitude).toBe(113.4);
+    page.onShow();
+    expect(page.data.departureReason).toContain("上次核对");
+    const updated = page.verifyCurrentRoute();
+    expect(page.data.routeView.destinationLabel).toBe("上次的书店");
+    point({ latitude: 23.1, longitude: 113.2 });
+    await updated;
+    expect(posts).toBe(1);
+    expect(page.data.routeView.destinationLabel).toBe("书店");
+    expect(page.data.routeView.durationText).toBe("地铁约 10 分钟到达");
+    expect(page.services.routeCache.get(userId, target).view.longitude).toBe(113.3);
+    expect(page.runtime.requestLocation).toBeNull();
+    page.updateData({
+      recommendation: { ...response.recommendation, progress: { state: "ACTIVE" } },
+    });
+    expect(page.data.canVerifyRoute).toBe(false);
+    await page.verifyCurrentRoute();
+    expect(posts).toBe(1);
+    page.onUnload();
+  });
+  it("clears application-memory routes when the session owner changes", () => {
+    const page = mount((options) => success(options, []));
+    const target = randomUUID();
+    page.services.routeCache.set(userId, target, {
+      view: { longitude: 113.4 },
+      departureReason: "旧路线",
+    });
+    page.services.sessionStore.setUser(randomUUID());
+    expect(page.services.routeCache.get(userId, target)).toBeNull();
     page.onUnload();
   });
   it("discards a late verified map after leaving the page", async () => {

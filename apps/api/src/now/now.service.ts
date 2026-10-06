@@ -41,6 +41,7 @@ import {
   scoreCandidates,
   scoringVersion,
   interventionThreshold,
+  planningFacts,
   type DecisionCandidate,
 } from "@life/domain";
 import { BuildDecisionContextService } from "../context/build-decision-context.service.js";
@@ -48,6 +49,7 @@ import { ActionPlanService } from "../planning/action-plan.service.js";
 import { DATABASE } from "../common/tokens.js";
 import { IdempotencyService } from "../common/idempotency.service.js";
 import { PreferenceReader } from "../feedback/preference-reader.js";
+import { TransportPreferenceReader } from "../feedback/transport-preference-reader.js";
 import { destinationQueryForObject } from "@life/integrations";
 
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -357,8 +359,16 @@ export class NowService {
   ) {
     const decisionTime = new Date();
     const preferences = await new PreferenceReader(tx).read(userId, rows, decisionTime);
+    const transportPreference = await new TransportPreferenceReader(tx).read(userId, decisionTime);
     rows = rows.map((row) => ({ ...row, ...preferences.get(row.id) }));
-    const enrichedRows = await this.withFacts(tx, userId, rows, context, focusObjectId);
+    const enrichedRows = await this.withFacts(
+      tx,
+      userId,
+      rows,
+      context,
+      focusObjectId,
+      transportPreference.preferScenicBus,
+    );
     rows = enrichedRows;
     const routeChecks = new Map(enrichedRows.map((row) => [row.id, row.routeCheck]));
     const ranked = scoreCandidates(rows, context, decisionTime);
@@ -383,6 +393,15 @@ export class NowService {
         departureBlocker: direct.hardFilterReason,
         requiredSeconds: direct.requiredSeconds,
         availableSeconds: limits.length ? Math.min(...limits) * 60 : null,
+        mode: route.mode,
+        transitKind: route.transitKind,
+        transitMixed: row.routeTransitMixed,
+        selectionReason: route.selectionReason,
+        observedAt: new Date(route.observedAt).toISOString(),
+        expiresAt: new Date(route.expiresAt).toISOString(),
+        returnTimingVerified: route.returnTimingVerified,
+        comparisonComplete: row.routeComparisonComplete,
+        transportCostMinor: route.costMinor ?? (route.mode === "walking" ? 0 : null),
       });
       if (detail.success)
         verifiedRouteDetails[row.id] = {
@@ -864,8 +883,16 @@ export class NowService {
     rows: DecisionCandidate[],
     context: NowContext,
     focusObjectId?: string,
+    preferScenicBus = false,
   ): Promise<
-    Array<DecisionCandidate & { routeCheck?: RouteCheck | null; destinationLabel?: string }>
+    Array<
+      DecisionCandidate & {
+        routeCheck?: RouteCheck | null;
+        destinationLabel?: string;
+        routeComparisonComplete?: boolean;
+        routeTransitMixed?: boolean;
+      }
+    >
   > {
     if (!rows.length) return rows;
     const ids = rows.map((item) => item.id);
@@ -955,8 +982,11 @@ export class NowService {
             address: item.destinationQuery?.address,
             city: item.destinationQuery?.city,
             requiresRoute: true,
+            activitySeconds: planningFacts(item).requiredSeconds,
+            activityCostMinor: planningFacts(item).costMinMinor,
           };
         }),
+      { compareModesForId: focusObjectId, preferScenicBus },
     );
     return enriched.map((item) => {
       const result = external[item.id],
@@ -965,6 +995,8 @@ export class NowService {
       return {
         ...item,
         destinationLabel: item.destinationQuery?.label ?? item.title,
+        routeComparisonComplete: route?.comparisonComplete,
+        routeTransitMixed: route?.transitMixed,
         routeCheck: result
           ? ({ status: result.status, reason: result.reason ?? null } as RouteCheck)
           : geographicIds.has(item.id)

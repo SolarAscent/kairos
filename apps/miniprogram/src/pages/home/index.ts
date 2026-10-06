@@ -29,7 +29,7 @@ import {
   type CaptureImage,
 } from "../../lib/media";
 import { createLifeStack, type LifeStack } from "../../lib/life";
-const { client, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
+const { client, sessionStore, routeCache } = getApp<{ globalData: AppServices }>().globalData;
 
 type Pending = { signature: string; key: string };
 type HomeCard = {
@@ -170,13 +170,29 @@ Page({
   runtime: createRuntime(),
   updateData(values: Partial<ReturnType<typeof createData>>) {
     if (this.runtime.unloaded) return;
-    if (
-      "recommendation" in values &&
-      (values.recommendation?.id !== this.data.recommendation?.id ||
-        values.recommendation?.targetLifeObjectId !== this.data.recommendation?.targetLifeObjectId)
-    ) {
-      this.setData({ routeView: null, departureReason: "", ...values });
+    if ("recommendation" in values) {
+      const target = values.recommendation?.targetLifeObjectId;
+      const cached = routeCache.get(client.userId, target);
+      const sameTarget = target === this.data.recommendation?.targetLifeObjectId;
+      this.setData({
+        ...values,
+        routeView: cached?.view ?? null,
+        departureReason: cached ? `上次核对：${cached.departureReason}` : "",
+        canVerifyRoute:
+          values.recommendation?.progress?.state !== "ACTIVE" &&
+          ((values.canVerifyRoute ?? (sameTarget && this.data.canVerifyRoute)) || !!cached),
+      });
     } else this.setData(values);
+  },
+  restoreRouteView() {
+    const cached = routeCache.get(client.userId, this.data.recommendation?.targetLifeObjectId);
+    this.updateData({
+      routeView: cached?.view ?? null,
+      departureReason: cached ? `上次核对：${cached.departureReason}` : "",
+      canVerifyRoute:
+        this.data.recommendation?.progress?.state !== "ACTIVE" &&
+        (this.data.canVerifyRoute || !!cached),
+    });
   },
   resetSessionContent() {
     const state = this.runtime;
@@ -244,6 +260,11 @@ Page({
     const state = this.runtime;
     state.visible = true;
     state.pollCount = 0;
+    if (state.lastUser !== (client.userId ?? "")) {
+      this.resetSessionContent();
+      state.lastUser = client.userId ?? "";
+    }
+    this.restoreRouteView();
     if (client.userId) {
       void this.refreshLists();
       void this.restoreActivePlan();
@@ -539,6 +560,7 @@ Page({
       });
       if (!isCurrent()) return;
       state.deletePending = state.nowPending = state.feedbackPending = state.answerPending = null;
+      routeCache.remove(owner, target);
       state.exclusions = [...state.exclusions, target].slice(-100);
       wx.removeStorageSync(`${client.storageKey}:active:${owner}`);
       this.updateData({
@@ -1119,7 +1141,6 @@ Page({
     state.locationGeneration++;
     state.nowPending = null;
     state.requestLocation = null;
-    this.updateData({ routeView: null, departureReason: "" });
     if (this.data.routeLocationBusy)
       this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
   },
@@ -1142,8 +1163,6 @@ Page({
       routeLocationBusy: true,
       busy: true,
       routeStatus: "正在获取当前位置…",
-      routeView: null,
-      departureReason: "",
       error: "",
       notice: "",
     });
@@ -1170,13 +1189,24 @@ Page({
       const result = await this.requestDecision(focusObjectId);
       if (!isCurrent() || !result) return;
       if (result.routeCheck?.status === "READY") {
-        const routeView =
+        const freshRouteView =
           result.recommendation?.targetLifeObjectId === focusObjectId
             ? createRouteView(result.routeCheck)
             : null;
+        if (freshRouteView && owner && focusObjectId)
+          routeCache.set(owner, focusObjectId, {
+            view: freshRouteView,
+            departureReason: departureMessage(result),
+          });
+        const cached = routeCache.get(owner, result.recommendation?.targetLifeObjectId);
+        const routeView = freshRouteView ?? cached?.view ?? null;
         this.updateData({
           routeView,
-          departureReason: routeView ? departureMessage(result) : "",
+          departureReason: freshRouteView
+            ? departureMessage(result)
+            : cached
+              ? `上次核对：${cached.departureReason}`
+              : "",
           notice: routeView ? "" : `往返路线已核对。${departureMessage(result)}`,
         });
       } else this.updateData({ error: routeUnavailableMessage(result.routeCheck?.reason) });
@@ -1209,7 +1239,6 @@ Page({
   async requestDecision(focusObjectId?: string) {
     const state = this.runtime;
     if (state.unloaded) return;
-    this.updateData({ routeView: null, departureReason: "" });
     const generation = state.locationGeneration;
     const owner = client.userId;
     if (state.requestLocation && Date.parse(state.requestLocation.expiresAt ?? "") <= Date.now())

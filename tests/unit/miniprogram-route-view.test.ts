@@ -42,6 +42,45 @@ describe("route interpretation", () => {
     expect(createRouteView({ status: "READY", reason: null })).toBeNull();
     expect(createRouteView({ status: "UNAVAILABLE", reason: "TIMEOUT" })).toBeNull();
   });
+  it.each([
+    ["walking", "步行", undefined],
+    ["bicycling", "骑行", undefined],
+    ["transit", "路线", undefined],
+    ["transit", "公交", "BUS"],
+    ["transit", "地铁", "SUBWAY"],
+    ["transit", "火车", "RAIL"],
+    ["transit", "混合出行", "MIXED"],
+  ] as const)(
+    "shows only the selected %s mode and its verified outward duration",
+    (mode, label, transitKind) => {
+      const response = result("DURATION_UNKNOWN");
+      const view = createRouteView({
+        ...response.routeCheck!,
+        detail: {
+          ...response.routeCheck!.detail!,
+          origin: { latitude: 23.1, longitude: 113.1, coordinateSystem: "GCJ02" },
+          destination: { latitude: 23.2, longitude: 113.2, coordinateSystem: "GCJ02" },
+          destinationLabel: "书店",
+          mode,
+          transitKind,
+          selectionReason: transitKind === "BUS" ? "SCENIC_BUS_PREFERENCE" : "FASTEST_VERIFIED",
+          observedAt: "2026-10-06T15:10:00.000Z",
+          expiresAt: "2026-10-06T17:10:00.000Z",
+          outwardSeconds: 901,
+          returnSeconds: 1040,
+          outwardMeters: 3000,
+          returnMeters: 3100,
+        },
+      });
+      expect(view?.durationText).toBe(`${label}约 16 分钟到达`);
+      expect(view?.durationText).not.toContain("返程");
+      expect(view?.durationText).not.toContain("公共交通");
+      if (transitKind === "BUS") expect(view?.selectionText).toContain("看风景的偏好");
+      else expect(view?.selectionText).toBe("");
+      expect(view?.checkedAtText).toContain("2026-10-06");
+      expect(view?.markers[0]?.callout.content).toBe("核对时的位置");
+    },
+  );
   it("does not treat a feasible time plan as verified venue opening or admission", () => {
     const response = result("");
     response.recommendation!.plan!.mode = "DO";
