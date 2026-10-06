@@ -130,6 +130,73 @@ afterAll(async () => {
   Object.assign(process.env, originalEnv);
 });
 describe("owned asynchronous destination enrichment", () => {
+  it("preserves the declared district when enriching a named venue", async () => {
+    const user = await owner();
+    const id = await seed(user.userId, "广州图书馆", "PLACE", {
+      place: { name: "广州图书馆", city: "广州市", region: "天河区", province: "广东省" },
+    });
+    geocode = async (address, city) => {
+      expect(address).toBe("广东省广州市天河区广州图书馆");
+      expect(city).toBe("广州市");
+      return verified;
+    };
+    await refresh(user.accessToken, [id]);
+    await worker.processNext();
+    expect((await coordinates(id)).latitude).toBe(point.latitude);
+    const stored = await pool.query(
+      "SELECT data FROM life_object_facets WHERE life_object_id=$1 AND facet_key='tencent_destination_location' AND deleted_at IS NULL",
+      [id],
+    );
+    expect(stored.rows[0].data.location).toMatchObject({
+      label: "广州图书馆",
+      query: { address: "广东省广州市天河区广州图书馆", city: "广州市" },
+    });
+  });
+  it("persists verified POI provenance without inventing geocoder reliability", async () => {
+    const user = await owner();
+    const id = await seed(user.userId);
+    geocode = async () => ({
+      ok: true,
+      value: {
+        location: point,
+        city: "广州市",
+        region: "广东省",
+        verificationMethod: "POI_SEARCH",
+        poi: {
+          id: "test-poi-id",
+          title: "天河公园",
+          address: "广东省广州市天河区黄埔大道中",
+          type: 0,
+          city: "广州市",
+          province: "广东省",
+          district: "天河区",
+          location: point,
+          query: "天河公园",
+          searchCity: "广州市",
+          resultCount: 1,
+          complete: true,
+          uniqueMatches: 1,
+          match: "EXACT_NAME",
+        },
+      },
+    });
+    await refresh(user.accessToken, [id]);
+    await worker.processNext();
+    expect((await coordinates(id)).latitude).toBe(point.latitude);
+    const stored = await pool.query(
+      "SELECT data FROM life_object_facets WHERE life_object_id=$1 AND facet_key='tencent_destination_location' AND deleted_at IS NULL",
+      [id],
+    );
+    expect(stored.rows[0].data.location).toMatchObject({
+      verificationMethod: "POI_SEARCH",
+      poi: { id: "test-poi-id", title: "天河公园" },
+    });
+    expect(stored.rows[0].data.location).not.toHaveProperty("reliability");
+    expect(stored.rows[0].data.location).not.toHaveProperty("level");
+    expect((await refresh(user.accessToken, [id])).json().data.items[0].status).toBe(
+      "ALREADY_LOCATED",
+    );
+  });
   it("reports configuration without key/IP leakage and never queues when unconfigured", async () => {
     const user = await owner(),
       id = await seed(user.userId);

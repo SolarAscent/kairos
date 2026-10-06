@@ -7,7 +7,7 @@ import {
   verifiedDestinationForObject,
   verifiedDestinationData,
   tencentDestinationFacetKey,
-  isGeoPoint,
+  isVerifiedGeocodedPlace,
   type LocationProvider,
   type DestinationFacet,
 } from "@life/integrations";
@@ -187,13 +187,7 @@ export async function enrichPlaceLocation(
     await fence((client) => outcome(client, result.reason));
     return;
   }
-  if (
-    !isGeoPoint(result.value.location) ||
-    !Number.isFinite(result.value.reliability) ||
-    result.value.reliability < 7 ||
-    !Number.isFinite(result.value.level) ||
-    result.value.level < 9
-  ) {
+  if (!isVerifiedGeocodedPlace(result.value, snapshot.destination)) {
     await fence((client) => outcome(client, "AMBIGUOUS_ADDRESS"));
     return;
   }

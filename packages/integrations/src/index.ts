@@ -16,8 +16,26 @@ export interface GeocodedPlace {
   location: GeoPoint;
   city?: string;
   region?: string;
-  reliability: number;
-  level: number;
+  reliability?: number;
+  level?: number;
+  verificationMethod?: "GEOCODE" | "POI_SEARCH";
+  poi?: VerifiedPoi;
+}
+export interface VerifiedPoi {
+  id: string;
+  title: string;
+  address: string;
+  type: 0 | 1 | 2;
+  city: string;
+  province: string;
+  district?: string;
+  location: GeoPoint;
+  query: string;
+  searchCity: string;
+  resultCount: number;
+  complete: true;
+  uniqueMatches: 1;
+  match: "EXACT_NAME" | "EXACT_ADDRESS";
 }
 export interface RouteEstimate {
   durationSeconds: number;
@@ -63,6 +81,158 @@ function record(value: unknown): Record<string, unknown> {
 }
 function nonnegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+const cityPrefixes = [
+  "北京",
+  "上海",
+  "天津",
+  "重庆",
+  "广州",
+  "深圳",
+  "珠海",
+  "佛山",
+  "东莞",
+  "中山",
+  "惠州",
+  "杭州",
+  "南京",
+  "武汉",
+  "成都",
+  "西安",
+  "长沙",
+  "福州",
+  "厦门",
+  "济南",
+  "青岛",
+  "郑州",
+  "合肥",
+  "南昌",
+  "南宁",
+  "昆明",
+  "贵阳",
+  "海口",
+  "沈阳",
+  "大连",
+  "长春",
+  "哈尔滨",
+  "石家庄",
+  "太原",
+  "呼和浩特",
+  "兰州",
+  "西宁",
+  "银川",
+  "乌鲁木齐",
+  "拉萨",
+  "香港",
+  "澳门",
+];
+const coarseRegions =
+  /^(?:全国|中国|广东|广西|新疆|西藏|内蒙古|宁夏|河北|河南|山东|山西|陕西|四川|云南|贵州|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|湖北|湖南|甘肃|青海|海南|台湾)(?:省|自治区)?$/u;
+function identity(value: string) {
+  return value.normalize("NFKC").replace(/\s/gu, "");
+}
+function sameCity(a: string, b: string) {
+  return identity(a).replace(/市$/u, "") === identity(b).replace(/市$/u, "");
+}
+function searchScope(address: string, suppliedCity?: string) {
+  const named = identity(address);
+  const administrative = named.match(
+    /^(?:中国)?(?:[\p{Script=Han}]{2,6}?(?:省|自治区))?([\p{Script=Han}]{2,10}?市)/u,
+  )?.[1];
+  const prefix = cityPrefixes.find(
+    (city) => named.startsWith(city) && !/^(?:路|街|巷|大道)/u.test(named.slice(city.length)),
+  );
+  const city = suppliedCity?.trim() || administrative || prefix;
+  if (!city || !/^[\p{Script=Han}]{2,20}$/u.test(city) || coarseRegions.test(city))
+    return undefined;
+  if (administrative && !sameCity(city, administrative)) return undefined;
+  if (prefix && !sameCity(city, prefix)) return undefined;
+  const province = named.match(/^(?:中国)?([\p{Script=Han}]{2,6}?(?:省|自治区|特别行政区))/u)?.[1];
+  const afterCity = administrative
+    ? named.slice(named.indexOf(administrative) + administrative.length)
+    : "";
+  const district = afterCity.match(/^([\p{Script=Han}]{1,8}?(?:区|县))/u)?.[1];
+  return { city, province, district };
+}
+function poiMatch(
+  query: string,
+  title: string,
+  address: string,
+  scope: { city: string; province?: string; district?: string },
+) {
+  const value = identity(query);
+  if (value === identity(address)) return "EXACT_ADDRESS" as const;
+  if (genericQuery(title)) return undefined;
+  if (value === identity(title)) return "EXACT_NAME" as const;
+  // Strip only supplied administrative qualifiers, never fuzzy venue aliases or suffixes.
+  let qualified = value;
+  for (const qualifier of [scope.province, scope.city, scope.district])
+    if (qualifier && qualified.startsWith(identity(qualifier)))
+      qualified = qualified.slice(identity(qualifier).length);
+  return qualified !== value && qualified === identity(title) ? ("EXACT_NAME" as const) : undefined;
+}
+function genericQuery(address: string) {
+  return (
+    /^(?:图书馆|博物馆|公园|咖啡馆|咖啡店|酒店|餐厅|饭店|超市|学校|医院|书店|电影院|地铁站|火车站|机场)$/u.test(
+      identity(address),
+    ) || /附近|随便|任意|最近的|一家|的(?:图书馆|博物馆|公园|酒店|餐厅)$/u.test(address)
+  );
+}
+/** Validates persisted provenance as well as adapter results; POI never impersonates geocoder precision. */
+export function isVerifiedGeocodedPlace(
+  value: GeocodedPlace,
+  query?: { address: string; city?: string },
+): boolean {
+  if (!isGeoPoint(value.location)) return false;
+  if (value.verificationMethod !== "POI_SEARCH")
+    return (
+      (value.verificationMethod == null || value.verificationMethod === "GEOCODE") &&
+      nonnegative(value.reliability) &&
+      value.reliability >= 7 &&
+      nonnegative(value.level) &&
+      value.level >= 9
+    );
+  const poi = value.poi;
+  if (
+    !poi ||
+    typeof poi.id !== "string" ||
+    !poi.id ||
+    typeof poi.title !== "string" ||
+    !poi.title ||
+    typeof poi.address !== "string" ||
+    !poi.address ||
+    ![0, 1, 2].includes(poi.type) ||
+    typeof poi.city !== "string" ||
+    typeof poi.province !== "string" ||
+    !poi.province ||
+    typeof poi.query !== "string" ||
+    typeof poi.searchCity !== "string" ||
+    poi.complete !== true ||
+    poi.uniqueMatches !== 1 ||
+    !Number.isInteger(poi.resultCount) ||
+    poi.resultCount < 1 ||
+    poi.resultCount > 20 ||
+    !isGeoPoint(poi.location) ||
+    poi.location.latitude !== value.location.latitude ||
+    poi.location.longitude !== value.location.longitude ||
+    value.location.latitude < 18 ||
+    value.location.latitude > 54 ||
+    value.location.longitude < 73 ||
+    value.location.longitude > 135 ||
+    (value.city != null && (typeof value.city !== "string" || !sameCity(value.city, poi.city))) ||
+    (query && poi.query !== query.address)
+  )
+    return false;
+  const scope = searchScope(poi.query, query?.city ?? poi.searchCity);
+  return Boolean(
+    scope &&
+    sameCity(scope.city, poi.city) &&
+    sameCity(scope.city, poi.searchCity) &&
+    (!scope.province || identity(scope.province) === identity(poi.province)) &&
+    (!scope.district || scope.district === poi.district) &&
+    !genericQuery(poi.query) &&
+    poi.match === poiMatch(poi.query, poi.title, poi.address, scope),
+  );
 }
 
 /** Official GET signing uses the sorted, unencoded values, followed by the server-only SK. */
@@ -156,18 +326,131 @@ export class TencentLbsAdapter implements LocationProvider {
       !nonnegative(result.level) ||
       result.level < 9
     )
-      return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+      return this.searchPoi(address.trim(), city, signal);
     const components = record(result.address_components);
+    const declaredScope = searchScope(address, city);
+    const expectedCity = city?.trim() || declaredScope?.city;
+    if (
+      expectedCity &&
+      typeof components.city === "string" &&
+      components.city &&
+      !sameCity(expectedCity, components.city)
+    )
+      return this.searchPoi(address.trim(), city, signal);
     return {
       ok: true,
       value: {
         location,
         reliability: result.reliability,
         level: result.level,
+        verificationMethod: "GEOCODE",
         ...(typeof components.city === "string" ? { city: components.city } : {}),
         ...(typeof components.province === "string" ? { region: components.province } : {}),
       },
     };
+  }
+  private async searchPoi(
+    address: string,
+    city?: string,
+    signal?: AbortSignal,
+  ): Promise<MapResult<GeocodedPlace>> {
+    const scope = searchScope(address, city);
+    if (
+      !scope ||
+      coarseRegions.test(identity(address)) ||
+      sameCity(address, scope.city) ||
+      genericQuery(address) ||
+      Buffer.byteLength(address, "utf8") > 96
+    )
+      return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+    const response = await this.request(
+      "/ws/place/v1/search",
+      {
+        keyword: address,
+        boundary: `region(${scope.city},0)`,
+        page_size: "20",
+        page_index: "1",
+        output: "json",
+      },
+      signal,
+    );
+    if (!response.ok) return response;
+    const count = response.value.count,
+      data = response.value.data;
+    if (!Number.isInteger(count) || (count as number) < 0 || !Array.isArray(data))
+      return { ok: false, reason: "INVALID_RESPONSE" };
+    if (
+      (count as number) > 20 ||
+      (count as number) !== data.length ||
+      response.value.cluster ||
+      response.value.clusters
+    )
+      return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+    const matches = new Map<string, GeocodedPlace>(),
+      seen = new Map<string, string>();
+    for (const entry of data) {
+      const row = record(entry),
+        ad = record(row.ad_info),
+        point = record(row.location);
+      if (
+        typeof row.id !== "string" ||
+        !row.id ||
+        typeof row.title !== "string" ||
+        !row.title ||
+        typeof row.address !== "string" ||
+        ![0, 1, 2, 3, 4].includes(row.type as number)
+      )
+        return { ok: false, reason: "INVALID_RESPONSE" };
+      const signature = JSON.stringify([
+        row.title,
+        row.address,
+        row.type,
+        point.lat,
+        point.lng,
+        ad.city,
+        ad.province,
+        ad.district,
+      ]);
+      if (seen.has(row.id) && seen.get(row.id) !== signature)
+        return { ok: false, reason: "INVALID_RESPONSE" };
+      seen.set(row.id, signature);
+      if (![0, 1, 2].includes(row.type as number)) continue;
+      const match = poiMatch(address, row.title, row.address, scope);
+      if (!match) continue;
+      const location = {
+        latitude: point.lat,
+        longitude: point.lng,
+        coordinateSystem: "GCJ02",
+      } as GeoPoint;
+      const result: GeocodedPlace = {
+        location,
+        verificationMethod: "POI_SEARCH",
+        city: typeof ad.city === "string" ? ad.city : undefined,
+        region: typeof ad.province === "string" ? ad.province : undefined,
+        poi: {
+          id: row.id,
+          title: row.title,
+          address: row.address,
+          type: row.type as 0 | 1 | 2,
+          city: ad.city as string,
+          province: ad.province as string,
+          district: typeof ad.district === "string" ? ad.district : undefined,
+          location,
+          query: address,
+          searchCity: scope.city,
+          resultCount: count as number,
+          complete: true,
+          uniqueMatches: 1,
+          match,
+        },
+      };
+      if (!isVerifiedGeocodedPlace(result, { address, city: scope.city }))
+        return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+      matches.set(row.id, result);
+    }
+    return matches.size === 1
+      ? { ok: true, value: [...matches.values()][0]! }
+      : { ok: false, reason: "AMBIGUOUS_ADDRESS" };
   }
   async route(
     from: GeoPoint,

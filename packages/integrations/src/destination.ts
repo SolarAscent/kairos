@@ -1,4 +1,4 @@
-import type { GeoPoint, GeocodedPlace } from "./index.js";
+import { isVerifiedGeocodedPlace, type GeoPoint, type GeocodedPlace } from "./index.js";
 
 export const tencentDestinationFacetKey = "tencent_destination_location";
 export interface DestinationFacet {
@@ -41,7 +41,26 @@ function query(
   )
     return undefined;
   const city = text(place.city, 80);
-  return { address, label: address, ...(city ? { city } : {}) };
+  const district = text(place.region, 20);
+  const province = text(place.province, 20);
+  // Keep explicit district disambiguation; a venue's name alone can geocode to a fuzzy match.
+  // Already qualified addresses and street addresses are left intact rather than duplicated.
+  let name = address;
+  if (province && name.startsWith(province)) name = name.slice(province.length);
+  const fullCity = city ? (city.endsWith("市") ? city : city + "市") : undefined;
+  if (fullCity && name.startsWith(fullCity)) name = name.slice(fullCity.length);
+  const refine =
+    city &&
+    name &&
+    /^[\p{Script=Han}]{1,12}(?:区|县)$/u.test(district ?? "") &&
+    !address.includes(district!) &&
+    !/(?:区|县|路|街|巷|号|大道)/u.test(address) &&
+    !/^[\p{Script=Han}]{2,10}?(?:省|市|自治区|特别行政区)/u.test(name);
+  const refined = refine
+    ? `${province && /^[\p{Script=Han}]{2,8}(?:省|自治区|特别行政区)$/u.test(province) ? province : ""}${fullCity}${district}${name}`
+    : address;
+  if (refined.length > 240) return undefined;
+  return { address: refined, label: address, ...(city ? { city } : {}) };
 }
 /** Visit destinations only: never geocode current GPS, originContext, or a HOME location. */
 export function destinationQueryForObject(
@@ -105,10 +124,21 @@ export function verifiedDestinationForObject(
       !Number.isFinite(location.longitude) ||
       Math.abs(location.latitude) > 90 ||
       Math.abs(location.longitude) > 180 ||
-      typeof location.reliability !== "number" ||
-      location.reliability < 7 ||
-      typeof location.level !== "number" ||
-      location.level < 9
+      !isVerifiedGeocodedPlace(
+        {
+          location: {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            coordinateSystem: "GCJ02",
+          },
+          verificationMethod: location.verificationMethod as GeocodedPlace["verificationMethod"],
+          reliability: location.reliability as number | undefined,
+          level: location.level as number | undefined,
+          poi: location.poi as GeocodedPlace["poi"],
+          city: location.city as string | undefined,
+        },
+        destination,
+      )
     )
       continue;
     return {
@@ -139,8 +169,13 @@ export function verifiedDestinationData(
       label: destination.label,
       ...(result.city ? { city: result.city } : {}),
       ...(result.region ? { region: result.region } : {}),
-      reliability: result.reliability,
-      level: result.level,
+      ...(result.verificationMethod ? { verificationMethod: result.verificationMethod } : {}),
+      ...(result.verificationMethod === "POI_SEARCH"
+        ? { poi: result.poi }
+        : {
+            reliability: result.reliability,
+            level: result.level,
+          }),
       observedAt,
     },
   };
