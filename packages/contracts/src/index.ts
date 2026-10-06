@@ -402,6 +402,24 @@ export const feedbackAcceptedSchema = z.object({
   replayed: z.boolean(),
   progress: actionProgressSchema.optional(),
 });
+const routePointSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  coordinateSystem: z.literal("GCJ02"),
+});
+export const routeCheckDetailSchema = z.object({
+  origin: routePointSchema,
+  destination: routePointSchema,
+  destinationLabel: z.string().min(1).max(240),
+  outwardSeconds: z.number().nonnegative(),
+  returnSeconds: z.number().nonnegative(),
+  outwardMeters: z.number().nonnegative(),
+  returnMeters: z.number().nonnegative(),
+  departureBlocker: z.string().nullable(),
+  requiredSeconds: z.number().nonnegative().nullable(),
+  availableSeconds: z.number().nonnegative().nullable().optional(),
+});
+export type RouteCheckDetail = z.infer<typeof routeCheckDetailSchema>;
 export const routeCheckSchema = z.object({
   status: z.enum(["READY", "UNAVAILABLE", "NOT_CHECKED"]),
   reason: z
@@ -422,6 +440,7 @@ export const routeCheckSchema = z.object({
       "NOT_GEOGRAPHIC",
     ])
     .nullable(),
+  detail: routeCheckDetailSchema.optional(),
 });
 export type RouteCheck = z.infer<typeof routeCheckSchema>;
 export const publicCandidateSchema = z.object({

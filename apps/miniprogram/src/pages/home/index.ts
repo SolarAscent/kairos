@@ -21,6 +21,7 @@ import {
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
 import { getCurrentLocation, routeUnavailableMessage } from "../../lib/location";
+import { createRouteView, departureMessage } from "../../lib/route-view";
 import {
   capabilitiesSchema,
   chooseCaptureImage,
@@ -65,14 +66,17 @@ const statusLabels: Record<string, string> = {
 function needsRouteLocation(result: NowResponse) {
   const recommendation = result.recommendation;
   return (
-    recommendation?.plan?.mode === "PREPARE" &&
+    !!recommendation &&
     result.candidates.some(
       (candidate) =>
         candidate.lifeObjectId === recommendation.targetLifeObjectId &&
         candidate.actionMode === "DO" &&
-        ["ROUTE_UNVERIFIED", "REGION_REQUIRES_TRAVEL", "NOT_GOING_OUT"].includes(
-          candidate.filterReason ?? "",
-        ),
+        (result.routeCheck?.status === "READY" ||
+          candidate.routeCheck?.status === "READY" ||
+          (recommendation.plan?.mode === "PREPARE" &&
+            ["ROUTE_UNVERIFIED", "REGION_REQUIRES_TRAVEL", "NOT_GOING_OUT"].includes(
+              candidate.filterReason ?? "",
+            ))),
     )
   );
 }
@@ -151,6 +155,8 @@ function createData() {
     canVerifyRoute: false,
     routeLocationBusy: false,
     routeStatus: "",
+    routeView: null as ReturnType<typeof createRouteView>,
+    departureReason: "",
     lifeStacks: [] as LifeStack[],
     lifeStacksLoaded: false,
     lifeStacksLoading: false,
@@ -163,7 +169,14 @@ Page({
   data: createData(),
   runtime: createRuntime(),
   updateData(values: Partial<ReturnType<typeof createData>>) {
-    if (!this.runtime.unloaded) this.setData(values);
+    if (this.runtime.unloaded) return;
+    if (
+      "recommendation" in values &&
+      (values.recommendation?.id !== this.data.recommendation?.id ||
+        values.recommendation?.targetLifeObjectId !== this.data.recommendation?.targetLifeObjectId)
+    ) {
+      this.setData({ routeView: null, departureReason: "", ...values });
+    } else this.setData(values);
   },
   resetSessionContent() {
     const state = this.runtime;
@@ -1106,6 +1119,7 @@ Page({
     state.locationGeneration++;
     state.nowPending = null;
     state.requestLocation = null;
+    this.updateData({ routeView: null, departureReason: "" });
     if (this.data.routeLocationBusy)
       this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
   },
@@ -1128,6 +1142,8 @@ Page({
       routeLocationBusy: true,
       busy: true,
       routeStatus: "正在获取当前位置…",
+      routeView: null,
+      departureReason: "",
       error: "",
       notice: "",
     });
@@ -1154,23 +1170,46 @@ Page({
       const result = await this.requestDecision(focusObjectId);
       if (!isCurrent() || !result) return;
       if (result.routeCheck?.status === "READY") {
-        const plan = result.recommendation?.plan;
+        const routeView =
+          result.recommendation?.targetLifeObjectId === focusObjectId
+            ? createRouteView(result.routeCheck)
+            : null;
         this.updateData({
-          notice:
-            plan?.basis === "VERIFIED_ROUTE"
-              ? `往返路线已核对：去程约 ${Math.ceil(plan.travelSeconds / 60)} 分钟，返程约 ${Math.ceil(plan.returnSeconds / 60)} 分钟。`
-              : "往返路线已核对；当前时间或其他条件暂不适合出发，先保留准备建议。",
+          routeView,
+          departureReason: routeView ? departureMessage(result) : "",
+          notice: routeView ? "" : `往返路线已核对。${departureMessage(result)}`,
         });
       } else this.updateData({ error: routeUnavailableMessage(result.routeCheck?.reason) });
     } catch (error) {
       if (isCurrent()) this.updateData({ error: userMessage(error) });
     } finally {
-      if (isCurrent()) this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
+      if (isCurrent()) {
+        // Device coordinates and idempotency signatures live only during this query.
+        state.requestLocation = null;
+        state.nowPending = null;
+        this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
+      }
+    }
+  },
+  openRouteDestination() {
+    const route = this.data.routeView;
+    if (!route || this.runtime.unloaded || this.data.busy) return;
+    try {
+      wx.openLocation({
+        latitude: route.latitude,
+        longitude: route.longitude,
+        name: route.destinationLabel,
+        scale: 16,
+        fail: () => this.updateData({ error: "暂时无法打开微信地图，请稍后再试。" }),
+      });
+    } catch {
+      this.updateData({ error: "暂时无法打开微信地图，请稍后再试。" });
     }
   },
   async requestDecision(focusObjectId?: string) {
     const state = this.runtime;
     if (state.unloaded) return;
+    this.updateData({ routeView: null, departureReason: "" });
     const generation = state.locationGeneration;
     const owner = client.userId;
     if (state.requestLocation && Date.parse(state.requestLocation.expiresAt ?? "") <= Date.now())

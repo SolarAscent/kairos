@@ -17,11 +17,20 @@
           <text wx:if="{{recommendation.plan}}" class="plan-label">{{recommendation.plan.label}}</text>
           <view wx:if="{{recommendation.plan}}" class="plan-steps"><text wx:for="{{recommendation.plan.steps}}" wx:key="*this">{{item}}</text></view>
           <view class="reason"><text>{{recommendation.reasonText}}</text></view>
+          <view wx:if="{{routeView}}" class="route-preview">
+            <text class="route-destination">{{routeView.destinationLabel}}</text>
+            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="当前位置与已核实目的地" />
+            <text class="route-duration">{{routeView.durationText}}</text>
+            <text class="route-blocker">{{departureReason}}</text>
+            <button class="text-button route-open" bindtap="openRouteDestination">在微信地图中查看目的地 ›</button>
+            <text class="route-privacy">位置仅用于本次核对；离开页面后清除</text>
+          </view>
           <view wx:if="{{canVerifyRoute && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="route-check">
             <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">{{routeLocationBusy ? '正在核对…' : '用当前位置核对路程'}}</button>
             <text wx:if="{{routeStatus}}" class="route-status">{{routeStatus}}</text>
             <text class="route-privacy">位置仅用于本次建议与腾讯地图路线查询</text>
           </view>
+          <text wx:if="{{departureReason && !routeView}}" class="route-blocker">{{departureReason}}</text>
           <view class="action-row">
             <button wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}" class="primary" data-type="COMPLETE" bindtap="feedback" disabled="{{busy}}">完成这一步</button>
             <button wx:else class="primary" data-type="ACCEPT" bindtap="feedback" disabled="{{busy}}" loading="{{busy}}">就做这个</button>

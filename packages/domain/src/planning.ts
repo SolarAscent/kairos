@@ -42,6 +42,7 @@ export interface VerifiedRoute {
   durationSeconds: number;
   returnDurationSeconds?: number | null;
   distanceMeters?: number | null;
+  returnDistanceMeters?: number | null;
   mode: string;
   provider: string;
   observedAt: string | Date;
@@ -531,7 +532,81 @@ export function planActions(
   // or cost by becoming an arbitrary 'prepare' version.
   const destination = facts.place?.name ?? targetRegion ?? candidate.title;
   const proposals: Array<{ key: string; seconds: number; headline: string; steps: string[] }> = [];
-  if (facts.activityKind === "TRAVEL") {
+  const available = availableMinutes(context);
+  const knownRouteBlockers: Record<string, { reason: string; headline: string; step: string }> = {
+    DURATION_UNKNOWN: {
+      reason: `去程和返程已核验，但还不知道你这次在「${destination}」要停留多久${available != null ? `；当前空闲 ${available} 分钟是可用时间，不是活动所需时长` : ""}，因此暂时无法判断完整行程是否放得下。`,
+      headline: `确定「${destination}」这次停留多久`,
+      step: "写下这次想做的具体内容和计划停留时长，再与已核验的往返耗时一起比较；出发前确认开放与入场条件。",
+    },
+    TIME_LIMIT: {
+      reason: `去程和返程已核验，但完整行程需要 ${Math.ceil(direct.requiredSeconds! / 60)} 分钟${available != null ? `，超过当前可用的 ${available} 分钟` : ""}。`,
+      headline: `给「${destination}」找一段足够的空闲时间`,
+      step: "查看接下来的安排，记下一段能容纳去程、活动和返程的时间；这次先不出发。",
+    },
+    COST_UNKNOWN: {
+      reason: "去程和返程已核验，但活动费用尚未确认，暂时无法与当前预算比较。",
+      headline: `确认「${destination}」的活动费用`,
+      step: "查清门票、参加费用及其他必要支出；未查到的金额先留空。",
+    },
+    BUDGET_LIMIT: {
+      reason: "去程和返程已核验，但已知的活动费用超过当前预算。",
+      headline: `核对「${destination}」的费用与预算`,
+      step: "记录必要费用和可用预算，看看是否存在已确认的免费或低价时段；先不购买。",
+    },
+    NOT_GOING_OUT: {
+      reason: "去程和返程已核验，但你目前选择了不出门。",
+      headline: `为下次去「${destination}」记一项准备`,
+      step: "记下一次愿意出门时想做的事情；这次在原地准备。",
+    },
+    EVENT_CONFLICT: {
+      reason: "去程和返程已核验，但完整行程与现有安排冲突。",
+      headline: `为「${destination}」核对空闲安排`,
+      step: "查看已有安排，记下一段没有冲突的候选时间。",
+    },
+    NOT_STARTED: {
+      reason: "去程和返程已核验，但活动或可参加的时间窗口还没有开始。",
+      headline: `记下「${destination}」的开始时间`,
+      step: "确认开始与结束时间，记下一项需要提前准备的事情。",
+    },
+    TIME_WINDOW_LIMIT: {
+      reason: "去程和返程已核验，但完整行程无法在活动结束或截止前完成。",
+      headline: `核对「${destination}」下一次可参加的时间`,
+      step: "查清下一次开放或活动时间，看看是否能留足往返与参加时间。",
+    },
+    BOOKING_UNCONFIRMED: {
+      reason: "去程和返程已核验，但所需预约尚未确认。",
+      headline: `确认「${destination}」的预约`,
+      step: "查清预约方式与可用时段，确认预约成功后再安排出发。",
+    },
+    ADMISSION_UNCONFIRMED: {
+      reason: "去程和返程已核验，但活动的入场条件尚未确认。",
+      headline: `确认「${destination}」的入场条件`,
+      step: "核对开放或活动时间、入场资格与参加方式。",
+    },
+    UNAVAILABLE: {
+      reason: "去程和返程已核验，但当前已确认无法参加这项活动。",
+      headline: `核对「${destination}」下次可参加的安排`,
+      step: "查清下一次开放或可参加的时间；这次先不出发。",
+    },
+    LONG_TERM_GOAL: {
+      reason: "去程和返程已核验，但这条记录仍是长期目标，当前应先做准备。",
+      headline: `写下去「${destination}」的第一个小目标`,
+      step: "写下这次想完成的具体内容和一个能检查是否完成的小结果。",
+    },
+  };
+  const departureBlocker =
+    verifiedRoute && requiresGoOut && direct.filterReason
+      ? knownRouteBlockers[direct.filterReason]
+      : undefined;
+  if (departureBlocker) {
+    proposals.push({
+      key: "CONDITION",
+      seconds: 300,
+      headline: departureBlocker.headline,
+      steps: [departureBlocker.step],
+    });
+  } else if (facts.activityKind === "TRAVEL") {
     proposals.push({
       key: "DATE",
       seconds: 300,
@@ -635,7 +710,9 @@ export function planActions(
       requiresGoOut: false,
       headline,
       body: proposal.steps.join("\n"),
-      reasonText: `现在做的是一个独立准备步骤，不是完成「${candidate.title}」。准备时段是规划估计；出发条件仍需确认。`,
+      reasonText: departureBlocker
+        ? `${departureBlocker.reason}现在先完成这项准备；准备时段是规划估计。`
+        : `现在做的是一个独立准备步骤，不是完成「${candidate.title}」。准备时段是规划估计；出发条件仍需确认。`,
       executionType: "START_TIMER",
       plan,
       filterReason: null,

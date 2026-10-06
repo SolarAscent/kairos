@@ -29,7 +29,7 @@ try {
     for (const item of await readdir(dir, { withFileTypes: true })) {
       const path = resolve(dir, item.name);
       if (item.isDirectory()) await assets(path);
-      else if (/\.(json|wxml|wxss)$/.test(item.name)) {
+      else if (/\.(json|wxml|wxss|png)$/.test(item.name)) {
         const dest = resolve(out, relative(src, path));
         await mkdir(dirname(dest), { recursive: true });
         await copyFile(path, dest);

@@ -70,6 +70,37 @@ const eligible = (value: DecisionCandidate, ctx: PlanningContext = context) =>
   planActions(value, ctx, now).filter((x) => x.filterReason == null);
 
 describe("bounded action planning", () => {
+  it("uses the remaining visit-duration blocker after a verified route without assigning AVAILABLE time as required duration", () => {
+    const goal = place({
+      actionFacts: [
+        fact({
+          activityKind: "LOCAL_OUTING",
+          place: { name: "图书馆", ...destination },
+          duration: { role: "AVAILABLE", scope: "CURRENT", minSeconds: 7200 },
+        }),
+      ],
+    });
+    const actions = planActions(goal, { ...context, availableMinutes: 120 }, now);
+    expect(actions.find((item) => item.actionMode === "DO")).toMatchObject({
+      filterReason: "DURATION_UNKNOWN",
+      requiredSeconds: null,
+    });
+    const preparation = actions.find((item) => item.actionMode === "PREPARE")!;
+    expect(preparation.headline).toContain("这次停留多久");
+    expect(preparation.reasonText).toContain("可用时间，不是活动所需时长");
+    expect(preparation.body).not.toContain("核对往返交通");
+    expect(preparation.filterReason).toBeNull();
+  });
+  it("explains the proven time limit after verified transport and keeps DO filtered", () => {
+    const actions = planActions(place(), { ...context, availableMinutes: 10 }, now);
+    expect(actions.find((item) => item.actionMode === "DO")).toMatchObject({
+      filterReason: "TIME_LIMIT",
+      requiredSeconds: 1320,
+    });
+    expect(actions.find((item) => item.actionMode === "PREPARE")?.reasonText).toContain(
+      "完整行程需要 22 分钟，超过当前可用的 10 分钟",
+    );
+  });
   it("ranks executable actions with versioned semantics", () => {
     expect(scoringVersion).toBe("now-engine-v0.3");
     expect(questionPolicyVersion).toBe("questions-adaptive-v0.3");

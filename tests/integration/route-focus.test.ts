@@ -151,7 +151,7 @@ describe("targeted, bounded route checks", () => {
     expect(response.statusCode).toBe(201);
     const state = nowResponseSchema.parse(response.json().data);
     expect(calls - before).toBe(2);
-    expect(state.candidates.find((item) => item.lifeObjectId === place)?.routeCheck).toEqual({
+    expect(state.candidates.find((item) => item.lifeObjectId === place)?.routeCheck).toMatchObject({
       status: "READY",
       reason: null,
     });
@@ -168,7 +168,17 @@ describe("targeted, bounded route checks", () => {
     expect(response.statusCode).toBe(201);
     const state = nowResponseSchema.parse(response.json().data);
     expect(state.focusObjectId).toBe(target);
-    expect(state.routeCheck).toEqual({ status: "READY", reason: null });
+    expect(state.routeCheck).toMatchObject({ status: "READY", reason: null });
+    expect(state.routeCheck?.detail).toMatchObject({
+      origin,
+      destination,
+      outwardSeconds: 120,
+      returnSeconds: 120,
+      outwardMeters: 100,
+      returnMeters: 100,
+      requiredSeconds: 840,
+      departureBlocker: null,
+    });
     expect(state.recommendation?.targetLifeObjectId).toBe(target);
     expect(state.recommendation?.plan?.mode).toBe("DO");
     expect(new Set(state.candidates.map((item) => item.lifeObjectId))).toEqual(new Set([target]));
@@ -177,6 +187,11 @@ describe("targeted, bounded route checks", () => {
     const replay = await req("POST", "/v1/now/sessions", user, body, key);
     expect(replay.json().data.sessionId).toBe(state.sessionId);
     expect(replay.json().data.replayed).toBe(true);
+    expect(replay.json().data.routeCheck.detail).toMatchObject({
+      origin,
+      destination,
+      departureBlocker: null,
+    });
     expect(calls - before).toBe(2);
     expect((await req("POST", "/v1/now/sessions", user, input(media), key)).statusCode).toBe(409);
   });
@@ -276,6 +291,13 @@ describe("targeted, bounded route checks", () => {
     );
     expect(tooShort.routeCheck?.status).toBe("READY");
     expect(tooShort.recommendation?.plan?.mode).toBe("PREPARE");
+    expect(tooShort.routeCheck?.detail).toMatchObject({
+      departureBlocker: "TIME_LIMIT",
+      requiredSeconds: 840,
+    });
+    expect(tooShort.routeCheck?.detail?.availableSeconds).toBeGreaterThanOrEqual(299);
+    expect(tooShort.routeCheck?.detail?.availableSeconds).toBeLessThanOrEqual(300);
+    expect(tooShort.recommendation?.reasonText).toContain("超过当前可用的 5 分钟");
     expect(tooShort.candidates.find((item) => item.actionMode === "DO")?.filterReason).toBe(
       "TIME_LIMIT",
     );
@@ -295,6 +317,109 @@ describe("targeted, bounded route checks", () => {
     expect(busy.recommendation).toBeNull();
     expect(busy.routeCheck?.reason).toBe("CURRENTLY_BUSY");
     expect(calls).toBe(before);
+  });
+  it("explains unknown visit duration after route verification and keeps precise detail only in the expiring snapshot", async () => {
+    const user = await owner(),
+      target = await seed(user),
+      key = randomUUID();
+    await pool.query(
+      "UPDATE life_object_projection SET duration_min_seconds=NULL WHERE life_object_id=$1",
+      [target],
+    );
+    await pool.query(
+      `UPDATE life_object_facets SET data=jsonb_set(data,'{facts,duration}',$2::jsonb) WHERE life_object_id=$1`,
+      [target, JSON.stringify({ role: "AVAILABLE", scope: "CURRENT", minSeconds: 7200 })],
+    );
+    const body = input(target, 120);
+    const state = nowResponseSchema.parse(
+      (await req("POST", "/v1/now/sessions", user, body, key)).json().data,
+    );
+    expect(state.recommendation?.plan?.mode).toBe("PREPARE");
+    expect(state.routeCheck).toMatchObject({
+      status: "READY",
+      reason: null,
+      detail: {
+        origin,
+        destination,
+        destinationLabel: "广州市合成地点",
+        departureBlocker: "DURATION_UNKNOWN",
+        requiredSeconds: null,
+      },
+    });
+    expect(state.routeCheck?.detail?.availableSeconds).toBeGreaterThanOrEqual(7199);
+    expect(state.routeCheck?.detail?.availableSeconds).toBeLessThanOrEqual(7200);
+    expect(state.recommendation?.reasonText).toContain("要停留多久");
+    expect(state.recommendation?.reasonText).toContain("可用时间，不是活动所需时长");
+    expect(state.recommendation?.body).not.toContain("核对往返交通");
+    const saved = await pool.query(
+      `SELECT
+      (SELECT jsonb_agg(action_payload) FROM action_candidates WHERE decision_session_id=$1) AS actions,
+      (SELECT jsonb_agg(execution_payload) FROM recommendations WHERE decision_session_id=$1) AS recommendations,
+      (SELECT response_body FROM idempotency_keys WHERE user_id=$2 AND idempotency_key=$3) AS response,
+      (SELECT context FROM context_snapshots WHERE decision_session_id=$1 ORDER BY created_at DESC LIMIT 1) AS snapshot`,
+      [state.sessionId, user.userId, key],
+    );
+    for (const store of [
+      saved.rows[0].actions,
+      saved.rows[0].recommendations,
+      saved.rows[0].response,
+    ]) {
+      expect(JSON.stringify(store)).not.toContain('"origin"');
+      expect(JSON.stringify(store)).not.toContain('"latitude"');
+      expect(JSON.stringify(store)).not.toContain('"detail"');
+    }
+    expect(saved.rows[0].snapshot.verifiedRouteDetails[target].detail.origin).toEqual(origin);
+    expect(
+      (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json().data.routeCheck.detail,
+    ).toMatchObject({ origin, departureBlocker: "DURATION_UNKNOWN" });
+    await pool.query(
+      "UPDATE context_snapshots SET purge_at=now()-interval '1 second' WHERE decision_session_id=$1",
+      [state.sessionId],
+    );
+    for (const response of [
+      await req("GET", `/v1/now/sessions/${state.sessionId}`, user),
+      await req("POST", "/v1/now/sessions", user, body, key),
+    ]) {
+      expect(response.json().data.routeCheck).toEqual({ status: "READY", reason: null });
+      expect(
+        response
+          .json()
+          .data.candidates.every(
+            (item: { routeCheck?: { detail?: unknown } }) => !item.routeCheck?.detail,
+          ),
+      ).toBe(true);
+    }
+  });
+  it("omits map detail for expired routes, changed source objects, and mismatched snapshot origins", async () => {
+    const user = await owner(),
+      target = await seed(user),
+      another = await owner();
+    for (const mutation of ["route", "object", "origin"] as const) {
+      const state = nowResponseSchema.parse(
+        (await req("POST", "/v1/now/sessions", user, input(target))).json().data,
+      );
+      expect(state.routeCheck?.detail?.origin).toEqual(origin);
+      if (mutation === "route")
+        await pool.query(
+          `UPDATE context_snapshots SET context=jsonb_set(context,ARRAY['verifiedRouteDetails',$2,'expiresAt'],to_jsonb('2000-01-01T00:00:00Z'::text)) WHERE decision_session_id=$1`,
+          [state.sessionId, target],
+        );
+      if (mutation === "object")
+        await pool.query("UPDATE life_objects SET object_version=object_version+1 WHERE id=$1", [
+          target,
+        ]);
+      if (mutation === "origin")
+        await pool.query(
+          `UPDATE context_snapshots SET context=jsonb_set(context,'{location,latitude}','24.1'::jsonb) WHERE decision_session_id=$1`,
+          [state.sessionId],
+        );
+      expect(
+        (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json().data.routeCheck,
+      ).toEqual({ status: "READY", reason: null });
+      expect((await req("GET", `/v1/now/sessions/${state.sessionId}`, another)).statusCode).toBe(
+        404,
+      );
+    }
   });
   it("finishes all five round trips with the real adapter's synthetic 250ms start pacing", async () => {
     let starts = 0;

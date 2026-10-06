@@ -95,4 +95,10 @@
 .route-check .secondary { font-size:26rpx; line-height:76rpx; }
 .route-privacy { display:block; margin-top:12rpx; color:#72827B; font-size:23rpx; line-height:1.7; }
 .route-status { color: #233C35; font-size: 25rpx; margin-top: 12rpx; line-height: 1.6; }
+.route-preview { margin-bottom: 32rpx; }
+.route-destination { font-size: 27rpx; line-height: 1.7; margin-bottom: 12rpx; }
+.route-map { display: block; width: 100%; height: 200px; border-radius: 20rpx; }
+.route-duration { color: #233C35; font-size: 25rpx; line-height: 1.7; margin-top: 16rpx; }
+.route-blocker { color: #655B4F; font-size: 25rpx; line-height: 1.7; margin-top: 12rpx; margin-bottom: 20rpx; }
+.route-open { padding-left: 0; }
 .delete-wish { margin:24rpx auto 0; width:auto !important; padding:8rpx 20rpx; color:#72827B; font-size:23rpx; line-height:52rpx; }

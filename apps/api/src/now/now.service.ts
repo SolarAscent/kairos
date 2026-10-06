@@ -6,7 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, desc, eq, sql, inArray, isNull, notInArray, or } from "drizzle-orm";
+import { and, desc, eq, sql, inArray, isNull, notInArray, or, gt } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   actionCandidates,
@@ -27,6 +27,7 @@ import {
   structuredLifeFactsSchema,
   nowQuestionSchema,
   routeCheckSchema,
+  routeCheckDetailSchema,
   type RouteCheck,
   type AnswerNowQuestionRequest,
   type CreateNowSessionRequest,
@@ -166,12 +167,11 @@ export class NowService {
         }
         await this.resolve(tx, userId, sessionId, context, rows, [], true, input.focusObjectId);
         await this.enqueueLegacyFacts(tx, userId, rows);
-        return this.read(tx, userId, sessionId);
+        return this.read(tx, userId, sessionId, false);
       },
     );
-    const body = result.replayed
-      ? await this.db.transaction((tx) => this.read(tx, userId, result.body.sessionId))
-      : result.body;
+    // Idempotency responses outlive GPS retention: assemble precise detail only after caching.
+    const body = await this.db.transaction((tx) => this.read(tx, userId, result.body.sessionId));
     return { ...body, replayed: result.replayed };
   }
 
@@ -214,7 +214,7 @@ export class NowService {
           const answer = question.answer as { optionId?: string } | null;
           if (answer?.optionId !== input.optionId)
             throw new ConflictException({ code: "NOW_ANSWER_CONFLICT" });
-          return this.read(tx, userId, sessionId);
+          return this.read(tx, userId, sessionId, false);
         }
         if (session.status !== "NEEDS_ANSWER" || question.status !== "PENDING")
           throw new ConflictException({ code: "NOW_QUESTION_NOT_PENDING" });
@@ -321,12 +321,10 @@ export class NowService {
           input.optionId !== "SKIP",
           focusObjectId,
         );
-        return this.read(tx, userId, sessionId);
+        return this.read(tx, userId, sessionId, false);
       },
     );
-    const body = result.replayed
-      ? await this.db.transaction((tx) => this.read(tx, userId, sessionId))
-      : result.body;
+    const body = await this.db.transaction((tx) => this.read(tx, userId, sessionId));
     return { ...body, replayed: result.replayed };
   }
 
@@ -364,6 +362,51 @@ export class NowService {
     rows = enrichedRows;
     const routeChecks = new Map(enrichedRows.map((row) => [row.id, row.routeCheck]));
     const ranked = scoreCandidates(rows, context, decisionTime);
+    const verifiedRouteDetails: Record<string, unknown> = {};
+    for (const row of enrichedRows) {
+      const direct = ranked.find((item) => item.id === row.id && item.actionKey === `${row.id}:DO`);
+      const route = row.route;
+      if (row.routeCheck?.status !== "READY" || !route || !direct) continue;
+      const limits = [
+        context.availableMinutes,
+        context.calendar?.effectiveAvailableMinutes,
+        context.calendar?.freeMinutesUntilNextEvent,
+      ].filter((value): value is number => value != null && Number.isFinite(value) && value >= 0);
+      const detail = routeCheckDetailSchema.safeParse({
+        origin: route.origin,
+        destination: route.destination,
+        destinationLabel: row.destinationLabel ?? row.title,
+        outwardSeconds: route.durationSeconds,
+        returnSeconds: route.returnDurationSeconds,
+        outwardMeters: route.distanceMeters,
+        returnMeters: route.returnDistanceMeters,
+        departureBlocker: direct.hardFilterReason,
+        requiredSeconds: direct.requiredSeconds,
+        availableSeconds: limits.length ? Math.min(...limits) * 60 : null,
+      });
+      if (detail.success)
+        verifiedRouteDetails[row.id] = {
+          detail: detail.data,
+          objectVersion: row.objectVersion,
+          observedAt: new Date(route.observedAt).toISOString(),
+          expiresAt: new Date(route.expiresAt).toISOString(),
+        };
+    }
+    // The snapshot is the sole GPS store and already has a two-hour purge policy.
+    // Permanent actions and recommendations retain only the route check status.
+    const [snapshot] = await tx
+      .select({ id: contextSnapshots.id })
+      .from(contextSnapshots)
+      .where(
+        and(eq(contextSnapshots.userId, userId), eq(contextSnapshots.decisionSessionId, sessionId)),
+      )
+      .orderBy(desc(contextSnapshots.createdAt), desc(contextSnapshots.id))
+      .limit(1);
+    if (snapshot)
+      await tx
+        .update(contextSnapshots)
+        .set({ context: { ...context, verifiedRouteDetails } })
+        .where(and(eq(contextSnapshots.id, snapshot.id), eq(contextSnapshots.userId, userId)));
     const existing = await tx
       .select({
         id: actionCandidates.id,
@@ -499,7 +542,12 @@ export class NowService {
       .where(eq(decisionSessions.id, sessionId));
   }
 
-  private async read(tx: DbTransaction, userId: string, sessionId: string) {
+  private async read(
+    tx: DbTransaction,
+    userId: string,
+    sessionId: string,
+    includeRouteDetails = true,
+  ) {
     const [session] = await tx
       .select()
       .from(decisionSessions)
@@ -511,6 +559,7 @@ export class NowService {
         lifeObjectId: actionCandidates.targetLifeObjectId,
         payload: actionCandidates.actionPayload,
         title: lifeObjects.title,
+        objectVersion: lifeObjects.objectVersion,
         totalScore: actionCandidates.totalScore,
         rank: actionCandidates.rank,
         filterReason: actionCandidates.hardFilterReason,
@@ -584,6 +633,94 @@ export class NowService {
           )
         : parsedPlan.data
       : null;
+    const targetId =
+      session.contextSummary.focusObjectId ??
+      visibleRecommendation?.executionPayload.targetLifeObjectId;
+    const [snapshot] =
+      includeRouteDetails && !sourceUnavailable
+        ? await tx
+            .select()
+            .from(contextSnapshots)
+            .where(
+              and(
+                eq(contextSnapshots.userId, userId),
+                eq(contextSnapshots.decisionSessionId, sessionId),
+                gt(contextSnapshots.purgeAt, new Date()),
+              ),
+            )
+            .orderBy(desc(contextSnapshots.createdAt), desc(contextSnapshots.id))
+            .limit(1)
+        : [];
+    const publicRouteCheck = (item: (typeof candidates)[number] | undefined): RouteCheck | null => {
+      const parsed = routeCheckSchema.safeParse(item?.payload.routeCheck);
+      if (!parsed.success) return null;
+      // Drop any legacy embedded detail, even if no valid snapshot is available.
+      const base: RouteCheck = { status: parsed.data.status, reason: parsed.data.reason };
+      if (
+        base.status !== "READY" ||
+        !snapshot ||
+        !item ||
+        !item.lifeObjectId ||
+        item.lifeObjectId !== targetId ||
+        !item.title ||
+        sourceUnavailable
+      )
+        return base;
+      const records = snapshot.context.verifiedRouteDetails as
+        | Record<
+            string,
+            {
+              detail?: unknown;
+              objectVersion?: number;
+              observedAt?: string;
+              expiresAt?: string;
+            }
+          >
+        | undefined;
+      const record = records?.[item.lifeObjectId];
+      const detail = routeCheckDetailSchema.safeParse(record?.detail);
+      const context = nowContextSchema.safeParse(snapshot.context);
+      const now = Date.now();
+      if (
+        !detail.success ||
+        !context.success ||
+        record?.objectVersion !== item.objectVersion ||
+        !record.observedAt ||
+        !record.expiresAt ||
+        !(Date.parse(record.observedAt) <= now + 30000 && Date.parse(record.expiresAt) > now) ||
+        snapshot.createdAt.getTime() + 2 * 3600000 <= now
+      )
+        return base;
+      const location = context.data.location;
+      if (
+        !location ||
+        location.source === "SAVED_HOME" ||
+        location.coordinateSystem !== "GCJ02" ||
+        location.latitude !== detail.data.origin.latitude ||
+        location.longitude !== detail.data.origin.longitude ||
+        (location.expiresAt && !(Date.parse(location.expiresAt) > now)) ||
+        (location.observedAt &&
+          !(
+            Date.parse(location.observedAt) <= now + 30000 &&
+            Date.parse(location.observedAt) + 2 * 3600000 > now
+          ))
+      )
+        return base;
+      const availableUntil = context.data.calendar?.availableUntil;
+      const remainingSeconds = availableUntil
+        ? Math.max(0, Math.floor((Date.parse(availableUntil) - now) / 1000))
+        : null;
+      return {
+        ...base,
+        detail: {
+          ...detail.data,
+          availableSeconds:
+            remainingSeconds == null
+              ? detail.data.availableSeconds
+              : Math.min(remainingSeconds, detail.data.availableSeconds ?? Infinity),
+        },
+      };
+    };
     return {
       sessionId,
       focusObjectId:
@@ -592,12 +729,8 @@ export class NowService {
           : null,
       routeCheck: (() => {
         if (sourceUnavailable) return null;
-        const targetId =
-          session.contextSummary.focusObjectId ??
-          visibleRecommendation?.executionPayload.targetLifeObjectId;
         const target = candidates.find((item) => item.lifeObjectId === targetId);
-        const parsed = routeCheckSchema.safeParse(target?.payload.routeCheck);
-        return parsed.success ? parsed.data : null;
+        return publicRouteCheck(target);
       })(),
       status: sourceUnavailable ? "QUIET" : session.status,
       quietReason: sourceUnavailable
@@ -642,10 +775,7 @@ export class NowService {
           actionMode: item.payload.actionMode,
           actionTitle: item.payload.headline,
           requiredSeconds: item.payload.requiredSeconds,
-          routeCheck: (() => {
-            const parsed = routeCheckSchema.safeParse(item.payload.routeCheck);
-            return parsed.success ? parsed.data : null;
-          })(),
+          routeCheck: publicRouteCheck(item),
           totalScore: item.totalScore,
           rank: item.rank,
           filtered: item.hardFilterStatus === "FILTERED",
@@ -734,7 +864,9 @@ export class NowService {
     rows: DecisionCandidate[],
     context: NowContext,
     focusObjectId?: string,
-  ): Promise<Array<DecisionCandidate & { routeCheck?: RouteCheck | null }>> {
+  ): Promise<
+    Array<DecisionCandidate & { routeCheck?: RouteCheck | null; destinationLabel?: string }>
+  > {
     if (!rows.length) return rows;
     const ids = rows.map((item) => item.id);
     const links = await tx
@@ -832,6 +964,7 @@ export class NowService {
         destination = result?.destination;
       return {
         ...item,
+        destinationLabel: item.destinationQuery?.label ?? item.title,
         routeCheck: result
           ? ({ status: result.status, reason: result.reason ?? null } as RouteCheck)
           : geographicIds.has(item.id)

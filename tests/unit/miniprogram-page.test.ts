@@ -844,6 +844,127 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.error).toBe("");
     page.onUnload();
   });
+  it("displays fresh verified endpoints and original activity blocker without storing device coordinates", async () => {
+    const response = routePreparation();
+    const stored: unknown[] = [];
+    const opened: any[] = [];
+    const detail = {
+      origin: { latitude: 23.1291, longitude: 113.2644, coordinateSystem: "GCJ02" },
+      destination: { latitude: 23.1418, longitude: 113.2859, coordinateSystem: "GCJ02" },
+      destinationLabel: "广州购书中心",
+      outwardSeconds: 901,
+      returnSeconds: 1040,
+      outwardMeters: 1200,
+      returnMeters: 1400,
+      departureBlocker: "DURATION_UNKNOWN",
+      requiredSeconds: null,
+      availableSeconds: 3600,
+    };
+    let posts = 0;
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          ++posts === 1
+            ? response
+            : { ...response, routeCheck: { status: "READY", reason: null, detail } },
+        ),
+      false,
+      "home",
+      {
+        getLocation: (options: any) => options.success(detail.origin),
+        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+        openLocation: (options: any) => opened.push(options),
+      },
+    );
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.data.routeView.points).toEqual([
+      { latitude: 23.1291, longitude: 113.2644 },
+      { latitude: 23.1418, longitude: 113.2859 },
+    ]);
+    expect(page.data.routeView.markers.map((marker: any) => marker.id)).toEqual([1, 2]);
+    expect(page.data.routeView.durationText).toContain("去程约 16 分钟");
+    expect(page.data.routeView.durationText).toContain("返程约 18 分钟");
+    expect(page.data.departureReason).toContain("你打算在那里待多久");
+    expect(page.data.departureReason).not.toContain("暂不适合出发");
+    expect(page.data.departureReason).not.toContain("关闭");
+    expect(page.data.recommendation.plan.mode).toBe("PREPARE");
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.runtime.requestLocation).toBeNull();
+    expect(page.runtime.nowPending).toBeNull();
+    expect(stored).toEqual([]);
+    page.openRouteDestination();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({
+      latitude: 23.1418,
+      longitude: 113.2859,
+      name: "广州购书中心",
+    });
+    page.onHide();
+    expect(page.data.routeView).toBeNull();
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.data.departureReason).toBe("");
+    expect(JSON.stringify(page.data)).not.toContain("113.2644");
+    expect(JSON.stringify(page.data)).not.toContain("113.2859");
+    page.openRouteDestination();
+    expect(opened).toHaveLength(1);
+    page.onUnload();
+  });
+  it("clears a previous map when recommendations change or the account resets", () => {
+    const page = mount((options) => success(options, routePreparation()));
+    page.updateData({ recommendation: routePreparation().recommendation });
+    page.setData({ routeView: { longitude: 113.2644 }, departureReason: "旧路线" });
+    page.updateData({ recommendation: routePreparation().recommendation });
+    expect(page.data.routeView).toBeNull();
+    expect(page.data.departureReason).toBe("");
+    page.setData({ routeView: { longitude: 113.2644 }, departureReason: "旧路线" });
+    page.resetSessionContent();
+    expect(page.data.routeView).toBeNull();
+    expect(page.data.departureReason).toBe("");
+    page.onUnload();
+  });
+  it("discards a late verified map after leaving the page", async () => {
+    const response = routePreparation();
+    let routeRequest: any;
+    const page = mount(
+      (options) => {
+        if (options.data?.focusObjectId) routeRequest = options;
+        else success(options, response);
+      },
+      false,
+      "home",
+      { getLocation: (options: any) => options.success({ latitude: 23.1, longitude: 113.2 }) },
+    );
+    await page.decide();
+    const pending = page.verifyCurrentRoute();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(routeRequest).toBeDefined();
+    page.onHide();
+    success(routeRequest, {
+      ...response,
+      routeCheck: {
+        status: "READY",
+        reason: null,
+        detail: {
+          origin: { latitude: 23.1, longitude: 113.2, coordinateSystem: "GCJ02" },
+          destination: { latitude: 23.2, longitude: 113.3, coordinateSystem: "GCJ02" },
+          destinationLabel: "书店",
+          outwardSeconds: 600,
+          returnSeconds: 700,
+          outwardMeters: 900,
+          returnMeters: 1000,
+          departureBlocker: "DURATION_UNKNOWN",
+          requiredSeconds: null,
+        },
+      },
+    });
+    await pending;
+    expect(page.data.routeView).toBeNull();
+    expect(page.runtime.requestLocation).toBeNull();
+    expect(page.runtime.nowPending).toBeNull();
+    page.onUnload();
+  });
   it("preserves the preparation card when location is denied and never submits a fake location", async () => {
     let posts = 0;
     const response = routePreparation();
