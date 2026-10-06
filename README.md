@@ -26,6 +26,8 @@ pnpm db:migrate
 
 执行 `pnpm build:miniprogram` 后，在微信开发者工具中导入 `apps/miniprogram/dist`。无 AppID 时可先显式配置本地模拟登录；默认不会自动回退。配置步骤、真机接入条件及人工验收项目见[微信接入说明](docs/wechat-setup.md)，分阶段安排见[开发计划](docs/wechat-integration-plan.md)。
 
+个人资料入口位于首页右上角，支持修改头像、昵称与个人简介，资料与生活记录关联到同一微信账户。接口、数据库迁移及联调范围见[个人资料说明](docs/user-profile-2026-10-06.md)。
+
 ### 共同开发
 
 GitHub 是代码协作入口，微信开发者工具用于小程序编译、预览和上传。新成员克隆仓库、安装依赖后，从当前团队分支创建自己的功能分支；通过 Pull Request 审查、CI 检查后再合并。只开发小程序界面的成员可连接团队测试 API，无需获取服务端 AppSecret 或部署数据库。

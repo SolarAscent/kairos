@@ -1,5 +1,5 @@
 {
-  "pages": ["pages/home/index", "pages/life-list/index"],
+  "pages": ["pages/home/index", "pages/life-list/index", "pages/profile/index"],
   "permission": {
     "scope.userLocation": {
       "desc": "仅在主动核对路线或选择附近时使用当前位置"

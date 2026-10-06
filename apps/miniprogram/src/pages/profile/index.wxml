@@ -1,0 +1,42 @@
+<view class="profile-screen" style="padding-top: {{topInset}}px;">
+  <view class="profile-header">
+    <button class="back-button" bindtap="goBack" disabled="{{saving || avatarLoading}}" aria-label="返回">‹ 返回</button>
+    <text class="page-title">个人资料</text><view class="header-spacer"></view>
+  </view>
+  <scroll-view class="profile-scroll" scroll-y type="list">
+    <view class="profile-body">
+      <view wx:if="{{!loaded}}" class="load-state"><text>{{loading ? '正在读取你的资料…' : '暂时无法读取资料'}}</text><text wx:if="{{error}}" class="error">{{error}}</text><button wx:if="{{!loading}}" class="retry-button" bindtap="loadProfile">重新读取</button></view>
+      <block wx:else>
+        <view class="identity-card">
+          <button class="avatar-button" open-type="chooseAvatar" bindchooseavatar="chooseAvatar" disabled="{{saving || avatarLoading}}" aria-label="修改头像">
+            <image wx:if="{{avatarPath}}" class="avatar-image" src="{{avatarPath}}" mode="aspectFill" binderror="avatarFailed" />
+            <view wx:else class="avatar-default"><text>K</text></view>
+            <view class="avatar-edit">＋</view>
+          </button>
+          <text class="display-name">{{displayName}}</text>
+          <text class="avatar-hint">{{avatarLoading ? '正在准备头像…' : '点头像，换一个喜欢的自己'}}</text>
+          <button wx:if="{{hasAvatar}}" class="remove-avatar" bindtap="removeAvatar" disabled="{{saving || avatarLoading}}">恢复默认头像</button>
+          <text wx:if="{{avatarError}}" class="error">{{avatarError}}</text>
+        </view>
+        <view class="form-card">
+          <view class="form-field"><text class="field-label">昵称</text><input class="nickname-input" type="nickname" value="{{nickname}}" bindinput="editNickname" bindblur="editNickname" maxlength="32" placeholder="填写你喜欢的称呼" disabled="{{saving}}" adjust-position cursor-spacing="24" /><text class="field-hint">可填写微信昵称，也可以自己取一个。</text></view>
+          <view class="field-divider"></view>
+          <view class="form-field"><view class="field-heading"><text class="field-label">个人简介</text><text class="optional">选填</text></view><textarea class="bio-input" value="{{bio}}" bindinput="editBio" maxlength="160" placeholder="最近喜欢什么，或想成为怎样的自己…" disabled="{{saving}}" adjust-position cursor-spacing="24" /><text class="field-count">{{bio.length}} / 160</text></view>
+        </view>
+        <text class="section-caption">账号与记录</text>
+        <view class="account-card">
+          <view class="account-heading"><view class="identity-dot {{wechatLinked ? 'linked' : ''}}"></view><text class="account-title">{{identityLabel}}</text></view>
+          <text class="account-detail">{{identityDetail}}</text>
+          <button class="account-id" bindtap="copyAccountId"><view><text class="id-label">账户 ID</text><text class="id-value">{{userId}}</text></view><text class="copy-label">复制</text></button>
+          <text class="joined-date">加入于 {{createdDate}}</text>
+        </view>
+        <view class="privacy-note"><text>这些资料仅用于你的个人页面。</text><text>修改昵称或头像，生活记录会继续保留。</text></view>
+        <button class="logout-button" bindtap="signOut" disabled="{{saving || avatarLoading}}">退出登录</button>
+      </block>
+    </view>
+  </scroll-view>
+  <view wx:if="{{loaded}}" class="save-area" style="padding-bottom: {{bottomInset + 12}}px;">
+    <text wx:if="{{error}}" class="error save-error">{{error}}</text><text wx:if="{{notice}}" class="save-notice">{{notice}}</text>
+    <button class="save-button {{saving || loading || avatarLoading || !dirty ? 'save-disabled' : ''}}" bindtap="saveProfile" loading="{{saving}}" disabled="{{saving || loading || avatarLoading || !dirty}}">{{saving ? '正在保存…' : '保存修改'}}</button>
+  </view>
+</view>

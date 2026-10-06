@@ -28,7 +28,7 @@ import {
   type CaptureImage,
 } from "../../lib/media";
 import { createLifeStack, type LifeStack } from "../../lib/life";
-const { client, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
+const { client, sessionStore, profiles } = getApp<{ globalData: AppServices }>().globalData;
 
 type Pending = { signature: string; key: string };
 type HomeCard = {
@@ -119,6 +119,8 @@ function createRuntime() {
 function createData() {
   return {
     userId: "",
+    nickname: "",
+    avatarPath: "",
     tab: "now",
     topInset: 60,
     bottomInset: 24,
@@ -222,7 +224,7 @@ Page({
     });
     state.binding = createStoreBindings(this, {
       store: sessionStore,
-      fields: ["userId"],
+      fields: ["userId", "nickname", "avatarPath"],
       actions: [],
     });
     state.binding.updateStoreBindings();
@@ -231,7 +233,12 @@ Page({
     const state = this.runtime;
     state.visible = true;
     state.pollCount = 0;
+    if (state.lastUser !== (client.userId ?? "")) {
+      this.resetSessionContent();
+      state.lastUser = client.userId ?? "";
+    }
     if (client.userId) {
+      void profiles.load(true).catch(() => {});
       void this.refreshLists();
       void this.restoreActivePlan();
       if (this.data.tab === "life") void this.loadLifeStacks(true);
@@ -299,6 +306,7 @@ Page({
         this.resetSessionContent();
       }
       state.lastUser = client.userId ?? "";
+      void profiles.load(true).catch(() => {});
       await this.refreshLists();
     } catch (error) {
       this.updateData({ error: userMessage(error) });
@@ -321,6 +329,9 @@ Page({
       this.resetSessionContent();
       this.updateData({ busy: false });
     }
+  },
+  openProfile() {
+    if (client.userId && !this.data.busy) wx.navigateTo({ url: "/pages/profile/index" });
   },
   switchTab(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;

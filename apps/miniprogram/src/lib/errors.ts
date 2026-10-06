@@ -1,4 +1,9 @@
 const messages: Record<string, string> = {
+  AVATAR_READ_FAILED: "头像读取失败，请重新选择。",
+  AVATAR_TOO_LARGE: "头像压缩后仍偏大，请换一张较小的图片。",
+  AVATAR_FORMAT_OR_SIZE_INVALID: "请选择 JPG 或 PNG 头像，压缩后需小于 256 KB。",
+  AVATAR_STORAGE_UNAVAILABLE: "资料已保存，头像暂时未显示。请清理本机空间后重新进入。",
+  AVATAR_CHANGED: "头像刚刚有更新，请重新进入个人资料查看。",
   LOCATION_PERMISSION_REQUIRED: "可在微信设置中允许定位，原来的建议还在。",
   LOCATION_SYSTEM_DISABLED: "请在手机系统设置中开启定位，并允许微信使用位置后重试。",
   LOCATION_PRIVACY_REQUIRED: "请先在微信中确认位置相关的隐私授权，原来的建议还在。",

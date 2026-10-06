@@ -1,6 +1,7 @@
 <view class="screen" style="padding-top: {{topInset}}px;">
   <scroll-view class="content" scroll-y="{{!stackDragging}}" type="list">
     <view class="page-body">
+      <view wx:if="{{userId}}" class="home-header"><text class="home-wordmark">KAIROS</text><button class="profile-entry" bindtap="openProfile" disabled="{{busy}}" aria-label="打开个人资料"><text class="profile-entry-label">{{nickname || '我的'}}</text><image wx:if="{{avatarPath}}" class="profile-entry-avatar" src="{{avatarPath}}" mode="aspectFill" /><view wx:else class="profile-entry-default">K</view></button></view>
       <view wx:if="{{!userId}}" class="welcome">
         <text class="eyebrow">留一点时间，给自己</text>
         <text class="headline">想做的事，
@@ -79,7 +80,6 @@
             <text class="capture-text">{{item.title || (item.type === 'IMAGE' ? '留下一张图片' : '留下一个念头')}}</text><text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text><text class="status">{{item.statusLabel}}</text>
           </view>
         </view>
-        <button class="text-button logout" bindtap="signOut" disabled="{{busy}}">退出登录</button>
       </block>
       <text wx:if="{{notice && !(tab === 'now' && recommendation)}}" class="notice">{{notice}}</text>
       <text wx:if="{{error && !sheet && !(tab === 'now' && recommendation)}}" class="error">{{error}}</text>
