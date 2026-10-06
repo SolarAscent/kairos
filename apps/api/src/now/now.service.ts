@@ -402,6 +402,7 @@ export class NowService {
         returnTimingVerified: route.returnTimingVerified,
         comparisonComplete: row.routeComparisonComplete,
         transportCostMinor: route.costMinor ?? (route.mode === "walking" ? 0 : null),
+        segments: route.segments,
       });
       if (detail.success)
         verifiedRouteDetails[row.id] = {

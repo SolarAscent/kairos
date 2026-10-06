@@ -407,6 +407,23 @@ const routePointSchema = z.object({
   longitude: z.number().min(-180).max(180),
   coordinateSystem: z.literal("GCJ02"),
 });
+export const routeSegmentSchema = z.object({
+  mode: z.enum(["walking", "bicycling", "transit"]),
+  points: z
+    .array(
+      z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180) }),
+    )
+    .min(2)
+    .max(4096),
+});
+export type RouteSegment = z.infer<typeof routeSegmentSchema>;
+export const routeSegmentsSchema = z
+  .array(routeSegmentSchema)
+  .min(1)
+  .max(64)
+  .refine((segments) => segments.reduce((sum, segment) => sum + segment.points.length, 0) <= 4096)
+  .optional()
+  .catch(undefined);
 export const routeCheckDetailSchema = z.object({
   origin: routePointSchema,
   destination: routePointSchema,
@@ -435,6 +452,7 @@ export const routeCheckDetailSchema = z.object({
   returnTimingVerified: z.boolean().optional(),
   comparisonComplete: z.boolean().optional(),
   transportCostMinor: z.number().nonnegative().nullable().optional(),
+  segments: routeSegmentsSchema,
 });
 export type RouteCheckDetail = z.infer<typeof routeCheckDetailSchema>;
 export const routeCheckSchema = z.object({

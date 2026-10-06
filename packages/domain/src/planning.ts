@@ -46,6 +46,10 @@ export interface VerifiedRoute {
   costMinor?: number | null;
   returnTimingVerified?: boolean;
   transitKind?: "BUS" | "SUBWAY" | "RAIL" | "MIXED";
+  segments?: Array<{
+    mode: "walking" | "bicycling" | "transit";
+    points: Array<{ latitude: number; longitude: number }>;
+  }>;
   selectionReason?:
     | "WALKING_FITS"
     | "FASTER_MODE_FITS"

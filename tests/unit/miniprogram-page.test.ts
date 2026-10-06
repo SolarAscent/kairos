@@ -853,6 +853,16 @@ describe("Home context and multimodal input interactions", () => {
       destination: { latitude: 23.1418, longitude: 113.2859, coordinateSystem: "GCJ02" },
       destinationLabel: "广州购书中心",
       mode: "bicycling",
+      segments: [
+        {
+          mode: "bicycling",
+          points: [
+            { latitude: 23.1291, longitude: 113.2644 },
+            { latitude: 23.15, longitude: 113.3 },
+            { latitude: 23.1418, longitude: 113.2859 },
+          ],
+        },
+      ],
       observedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 7200000).toISOString(),
       outwardSeconds: 901,
@@ -891,7 +901,9 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.routeView.points).toEqual([
       { latitude: 23.1291, longitude: 113.2644 },
       { latitude: 23.1418, longitude: 113.2859 },
+      ...detail.segments[0]!.points,
     ]);
+    expect(page.data.routeView.polyline[0].points).toEqual(detail.segments[0]!.points);
     expect(page.data.routeView.markers.map((marker: any) => marker.id)).toEqual([1, 2]);
     expect(page.data.routeView.durationText).toBe("骑行约 16 分钟到达");
     expect(page.data.routeView.durationText).not.toContain("返程");
@@ -918,6 +930,7 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.runtime.requestLocation).toBeNull();
     page.onShow();
     expect(page.data.routeView.destinationLabel).toBe("广州购书中心");
+    expect(page.data.routeView.polyline[0].points).toEqual(detail.segments[0]!.points);
     expect(posts).toBe(2);
     expect(locations).toBe(1);
     const otherTarget = routePreparation().recommendation;
@@ -936,6 +949,7 @@ describe("Home context and multimodal input interactions", () => {
     recreated.updateData({ recommendation: response.recommendation });
     recreated.onShow();
     expect(recreated.data.routeView.destinationLabel).toBe("广州购书中心");
+    expect(recreated.data.routeView.polyline[0].points).toEqual(detail.segments[0]!.points);
     expect(posts).toBe(2);
     expect(locations).toBe(1);
     expect(stored).toEqual([]);

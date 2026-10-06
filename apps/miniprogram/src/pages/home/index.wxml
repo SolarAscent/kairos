@@ -19,7 +19,7 @@
           <view class="reason"><text>{{recommendation.reasonText}}</text></view>
           <view wx:if="{{routeView}}" class="route-preview">
             <text class="route-destination">{{routeView.destinationLabel}}</text>
-            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="上次核对位置与目的地" />
+            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" polyline="{{routeView.polyline || []}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="上次核对位置、去程路线与目的地" />
             <text class="route-duration">{{routeView.durationText}}</text>
             <text wx:if="{{routeView.selectionText}}" class="route-status">{{routeView.selectionText}}</text>
             <text class="route-privacy">{{routeView.checkedAtText}} · 可更新路线</text>

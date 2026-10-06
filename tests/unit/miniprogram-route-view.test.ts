@@ -42,6 +42,81 @@ describe("route interpretation", () => {
     expect(createRouteView({ status: "READY", reason: null })).toBeNull();
     expect(createRouteView({ status: "UNAVAILABLE", reason: "TIMEOUT" })).toBeNull();
   });
+  it("draws supplied route segments with distinct mode styles and fits all route bends without adding markers or invented connectors", () => {
+    const response = result("DURATION_UNKNOWN");
+    const segments = [
+      {
+        mode: "walking" as const,
+        points: [
+          { latitude: 23.1, longitude: 113.1 },
+          { latitude: 23.15, longitude: 113.18 },
+        ],
+      },
+      {
+        mode: "bicycling" as const,
+        points: [
+          { latitude: 23.16, longitude: 113.19 },
+          { latitude: 23.4, longitude: 113.5 },
+          { latitude: 23.2, longitude: 113.2 },
+        ],
+      },
+      {
+        mode: "transit" as const,
+        points: [
+          { latitude: 23.21, longitude: 113.21 },
+          { latitude: 23.25, longitude: 113.3 },
+        ],
+      },
+    ];
+    const view = createRouteView({
+      ...response.routeCheck!,
+      detail: {
+        ...response.routeCheck!.detail!,
+        origin: { latitude: 23.1, longitude: 113.1, coordinateSystem: "GCJ02" },
+        destination: { latitude: 23.2, longitude: 113.2, coordinateSystem: "GCJ02" },
+        destinationLabel: "书店",
+        outwardSeconds: 900,
+        returnSeconds: 1000,
+        outwardMeters: 3000,
+        returnMeters: 3100,
+        segments,
+      },
+    });
+    expect(view?.polyline.map((line) => line.points)).toEqual(
+      segments.map((segment) => segment.points),
+    );
+    expect(view?.polyline.map((line) => line.dottedLine)).toEqual([true, false, false]);
+    expect(view?.polyline.map((line) => line.arrowLine)).toEqual([false, true, true]);
+    expect(new Set(view?.polyline.map((line) => line.color)).size).toBe(3);
+    expect(view?.markers).toHaveLength(2);
+    expect(view?.points).toEqual([
+      { latitude: 23.1, longitude: 113.1 },
+      { latitude: 23.2, longitude: 113.2 },
+      ...segments.flatMap((segment) => segment.points),
+    ]);
+    expect(view?.points).toContainEqual({ latitude: 23.4, longitude: 113.5 });
+    // Disconnected provider segments stay separate; no straight line bridges them.
+    expect(view?.polyline).toHaveLength(segments.length);
+  });
+  it("keeps endpoint markers without drawing a fallback straight line when geometry is absent", () => {
+    const response = result("DURATION_UNKNOWN");
+    const detail = {
+      ...response.routeCheck!.detail!,
+      origin: { latitude: 23.1, longitude: 113.1, coordinateSystem: "GCJ02" as const },
+      destination: { latitude: 23.2, longitude: 113.2, coordinateSystem: "GCJ02" as const },
+      destinationLabel: "书店",
+      outwardSeconds: 900,
+      returnSeconds: 1000,
+      outwardMeters: 3000,
+      returnMeters: 3100,
+    };
+    for (const segments of [undefined, []]) {
+      const view = createRouteView({ ...response.routeCheck!, detail: { ...detail, segments } });
+      expect(view?.polyline).toEqual([]);
+      expect(view?.points).toHaveLength(2);
+      expect(view?.markers).toHaveLength(2);
+    }
+  });
   it.each([
     ["walking", "步行", undefined],
     ["bicycling", "骑行", undefined],

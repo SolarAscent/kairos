@@ -453,6 +453,33 @@ describe("targeted, bounded route checks", () => {
       target = await seed(user),
       key = randomUUID();
     let modeCalls = 0;
+    const outwardSegments = [
+      {
+        mode: "walking" as const,
+        points: [
+          { latitude: origin.latitude, longitude: origin.longitude },
+          { latitude: 23.101, longitude: 113.3 },
+        ],
+      },
+      {
+        mode: "transit" as const,
+        points: [
+          { latitude: 23.101, longitude: 113.3 },
+          { latitude: 23.101, longitude: 113.304 },
+          { latitude: destination.latitude, longitude: destination.longitude },
+        ],
+      },
+    ];
+    const returnSegments = [
+      {
+        mode: "transit" as const,
+        points: [
+          { latitude: destination.latitude, longitude: destination.longitude },
+          { latitude: 23.106, longitude: 113.3 },
+          { latitude: origin.latitude, longitude: origin.longitude },
+        ],
+      },
+    ];
     provider.routeForMode = async (from, _to, mode) => {
       modeCalls++;
       return {
@@ -470,7 +497,11 @@ describe("targeted, bounded route checks", () => {
                   : 1100,
           costMinor: mode === "walking" ? 0 : mode === "bicycling" ? null : 200,
           ...(mode === "transit"
-            ? { transitKind: "SUBWAY", transitDurations: { SUBWAY: 600 } }
+            ? {
+                transitKind: "SUBWAY",
+                transitDurations: { SUBWAY: 600 },
+                segments: from.latitude === origin.latitude ? outwardSegments : returnSegments,
+              }
             : {}),
           provider: "TENCENT",
           observedAt: new Date().toISOString(),
@@ -498,10 +529,50 @@ describe("targeted, bounded route checks", () => {
         comparisonComplete: true,
       });
       expect(state.recommendation?.plan?.mode).toBe("DO");
+      expect(state.routeCheck?.detail?.segments).toEqual(outwardSegments);
+      const savedGeometry = await pool.query(
+        `SELECT
+        (SELECT context->'verifiedRouteDetails'->$2->'detail'->'segments' FROM context_snapshots WHERE decision_session_id=$1 ORDER BY created_at DESC LIMIT 1) AS segments,
+        (SELECT jsonb_agg(action_payload) FROM action_candidates WHERE decision_session_id=$1) AS actions,
+        (SELECT jsonb_agg(execution_payload) FROM recommendations WHERE decision_session_id=$1) AS recommendations,
+        (SELECT response_body FROM idempotency_keys WHERE user_id=$3 AND idempotency_key=$4) AS response`,
+        [state.sessionId, target, user.userId, key],
+      );
+      expect(savedGeometry.rows[0].segments).toEqual(outwardSegments);
+      for (const store of [
+        savedGeometry.rows[0].actions,
+        savedGeometry.rows[0].recommendations,
+        savedGeometry.rows[0].response,
+      ])
+        expect(JSON.stringify(store)).not.toContain('"segments"');
+      expect(
+        (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json().data.routeCheck
+          .detail.segments,
+      ).toEqual(outwardSegments);
       expect(
         (await req("POST", "/v1/now/sessions", user, body, key)).json().data.routeCheck.detail,
-      ).toMatchObject({ mode: "transit", transitKind: "SUBWAY" });
+      ).toMatchObject({ mode: "transit", transitKind: "SUBWAY", segments: outwardSegments });
       expect(modeCalls).toBe(6);
+      await pool.query(
+        `UPDATE context_snapshots SET context=jsonb_set(context,ARRAY['verifiedRouteDetails',$2,'detail','segments'],$3::jsonb) WHERE decision_session_id=$1`,
+        [
+          state.sessionId,
+          target,
+          JSON.stringify([
+            {
+              mode: "transit",
+              points: [
+                { latitude: 23.1, longitude: 113.3 },
+                { latitude: 999, longitude: 113.4 },
+              ],
+            },
+          ]),
+        ],
+      );
+      const malformedRead = (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json()
+        .data.routeCheck.detail;
+      expect(malformedRead.outwardSeconds).toBe(900);
+      expect(malformedRead.segments).toBeUndefined();
       const noBudget = nowResponseSchema.parse(
         (await req("POST", "/v1/now/sessions", user, input(target))).json().data,
       );

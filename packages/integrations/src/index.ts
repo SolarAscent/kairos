@@ -38,6 +38,70 @@ export interface VerifiedPoi {
   match: "EXACT_NAME" | "EXACT_ADDRESS";
 }
 export type RouteMode = "walking" | "bicycling" | "transit";
+export interface RouteLinePoint {
+  latitude: number;
+  longitude: number;
+}
+export interface RouteSegment {
+  mode: RouteMode;
+  points: RouteLinePoint[];
+}
+const maxRouteLinePoints = 4096;
+const maxRouteSegments = 64;
+/** Tencent's first lat/lng pair is absolute; later pairs are forward integer deltas. */
+export function decodeTencentPolyline(value: unknown): RouteLinePoint[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length < 4 ||
+    value.length % 2 !== 0 ||
+    value.length > maxRouteLinePoints * 2
+  )
+    return undefined;
+  const points: RouteLinePoint[] = [];
+  let latitude = 0,
+    longitude = 0;
+  for (let index = 0; index < value.length; index += 2) {
+    const lat = value[index],
+      lng = value[index + 1];
+    if (
+      typeof lat !== "number" ||
+      typeof lng !== "number" ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng)
+    )
+      return undefined;
+    if (index > 0 && (!Number.isSafeInteger(lat) || !Number.isSafeInteger(lng))) return undefined;
+    latitude = index === 0 ? lat : latitude + lat / 1000000;
+    longitude = index === 0 ? lng : longitude + lng / 1000000;
+    if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return undefined;
+    points.push({ latitude, longitude });
+  }
+  return points;
+}
+function segmentsForRoute(
+  route: Record<string, unknown>,
+  mode: RouteMode,
+): RouteSegment[] | undefined {
+  if (mode !== "transit") {
+    const points = decodeTencentPolyline(route.polyline);
+    return points ? [{ mode, points }] : undefined;
+  }
+  const steps = Array.isArray(route.steps) ? route.steps.map(record) : [];
+  if (steps.length > maxRouteSegments) return undefined;
+  const segments: RouteSegment[] = [];
+  let pointCount = 0;
+  for (const step of steps) {
+    const line = Array.isArray(step.lines) ? record(step.lines[0]) : step;
+    // Rail geometry is only station coordinates, not the railway's actual path.
+    if (step.mode === "TRANSIT" && line.vehicle === "RAIL") continue;
+    const points = decodeTencentPolyline(step.mode === "WALKING" ? step.polyline : line.polyline);
+    if (!points) continue;
+    pointCount += points.length;
+    if (pointCount > maxRouteLinePoints) return undefined;
+    segments.push({ mode: step.mode === "WALKING" ? "walking" : "transit", points });
+  }
+  return segments.length ? segments : undefined;
+}
 export type TransitKind = "BUS" | "SUBWAY" | "RAIL" | "MIXED";
 export type TransitDurations = Partial<Record<Exclude<TransitKind, "MIXED">, number>>;
 export function dominantTransitKind(durations: TransitDurations): TransitKind {
@@ -56,6 +120,8 @@ export interface RouteEstimate {
   costMinor?: number | null;
   transitKind?: TransitKind;
   transitDurations?: TransitDurations;
+  /** Only geometry belonging to this exact directional route; segments never bridge gaps. */
+  segments?: RouteSegment[];
   provider: "TENCENT";
   observedAt: string;
   expiresAt: string;
@@ -565,6 +631,7 @@ export class TencentLbsAdapter implements LocationProvider {
         distanceMeters: route.distance,
         durationSeconds: Math.ceil(route.duration * 60),
         mode,
+        segments: segmentsForRoute(route, mode),
         ...(mode === "transit"
           ? { transitDurations, transitKind: dominantTransitKind(transitDurations) }
           : {}),

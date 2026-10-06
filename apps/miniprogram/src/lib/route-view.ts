@@ -40,10 +40,23 @@ export function departureMessage(result: NowResponse) {
 export function createRouteView(check: RouteCheck | null | undefined) {
   const detail = check?.status === "READY" ? check.detail : undefined;
   if (!detail) return null;
-  const points = [detail.origin, detail.destination].map(({ latitude, longitude }) => ({
+  const markerPoints = [detail.origin, detail.destination].map(({ latitude, longitude }) => ({
     latitude,
     longitude,
   }));
+  const segments = detail.segments ?? [];
+  const points = [...markerPoints, ...segments.flatMap((segment) => segment.points)];
+  const polyline = segments
+    .filter((segment) => segment.points.length >= 2)
+    .map((segment) => ({
+      points: segment.points,
+      color: { walking: "#7E8B82", bicycling: "#4A7BA8", transit: "#233C35" }[segment.mode],
+      width: segment.mode === "walking" ? 4 : 6,
+      dottedLine: segment.mode === "walking",
+      arrowLine: segment.mode !== "walking",
+      borderColor: "#FFFFFF",
+      borderWidth: 2,
+    }));
   const checkedAt = new Date(detail.observedAt ?? Date.now());
   const pad = (value: number) => String(value).padStart(2, "0");
   const transitLabel = detail.transitKind
@@ -57,7 +70,8 @@ export function createRouteView(check: RouteCheck | null | undefined) {
     latitude: detail.destination.latitude,
     longitude: detail.destination.longitude,
     points,
-    markers: points.map((point, index) => ({
+    polyline,
+    markers: markerPoints.map((point, index) => ({
       ...point,
       id: index + 1,
       iconPath: index === 0 ? "/assets/map-origin.png" : "/assets/map-destination.png",
