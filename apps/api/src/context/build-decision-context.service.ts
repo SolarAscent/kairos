@@ -706,6 +706,24 @@ export class BuildDecisionContextService {
               ? ["walking", "bicycling", "transit"]
               : ["walking"];
           const routes: NonNullable<CandidateLocationEnrichment["route"]>[] = [];
+          const failures = new Map<RouteMode, string>();
+          const fail = (mode: RouteMode, reason: string) => {
+            failures.set(mode, reason);
+            if (routes.length || abort.signal.aborted) return;
+            // Keep the result stable across concurrent completion order. A generic
+            // transit rejection must not hide a concrete walking/cycling failure.
+            const ordered = modes.map((mode) => failures.get(mode)).filter(Boolean) as string[];
+            const generic = new Set([
+              "PROVIDER_REJECTED",
+              "PROVIDER_UNAVAILABLE",
+              "INVALID_RESPONSE",
+              "TIMEOUT",
+            ]);
+            results[target.id] = {
+              status: "UNAVAILABLE",
+              reason: ordered.find((reason) => !generic.has(reason)) ?? ordered[0],
+            };
+          };
           let requestedRoundTrips = modes.length;
           const departure = new Date();
           const limits = [
@@ -756,8 +774,7 @@ export class BuildDecisionContextService {
                   : this.locations.route(from, to, abort.signal);
               const outward = await request(origin, destination!, departure);
               if (!outward.ok) {
-                if (!routes.length && !abort.signal.aborted)
-                  results[target.id] = { status: "UNAVAILABLE", reason: outward.reason };
+                fail(mode, outward.reason);
                 return;
               }
               if (abort.signal.aborted) return;
@@ -772,8 +789,7 @@ export class BuildDecisionContextService {
                 (mode !== "transit" ||
                   ["BUS", "SUBWAY", "RAIL", "MIXED"].includes(value.transitKind ?? ""));
               if (!valid(outward.value)) {
-                if (!routes.length)
-                  results[target.id] = { status: "UNAVAILABLE", reason: "INVALID_RESPONSE" };
+                fail(mode, "INVALID_RESPONSE");
                 return;
               }
               const returnDeparture =
@@ -785,14 +801,12 @@ export class BuildDecisionContextService {
                   : departure;
               const back = await request(destination!, origin, returnDeparture);
               if (!back.ok) {
-                if (!routes.length && !abort.signal.aborted)
-                  results[target.id] = { status: "UNAVAILABLE", reason: back.reason };
+                fail(mode, back.reason);
                 return;
               }
               if (abort.signal.aborted) return;
               if (!valid(back.value)) {
-                if (!routes.length)
-                  results[target.id] = { status: "UNAVAILABLE", reason: "INVALID_RESPONSE" };
+                fail(mode, "INVALID_RESPONSE");
                 return;
               }
               const cost =
@@ -847,8 +861,7 @@ export class BuildDecisionContextService {
               });
               publish();
             } catch {
-              if (!routes.length && !abort.signal.aborted)
-                results[target.id] = { status: "UNAVAILABLE", reason: "PROVIDER_UNAVAILABLE" };
+              fail(mode, "PROVIDER_UNAVAILABLE");
             }
           };
           // Establish a walking fallback before spending up to four extra calls.

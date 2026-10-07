@@ -1217,10 +1217,11 @@ export class TencentLbsAdapter implements LocationProvider {
           )
             return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
           if (body.status === 326) return { ok: false, reason: "ROUTE_TOO_CLOSE" };
-          if ([327, 328, 329, 335, 344, 377, 378, 379, 384].includes(body.status as number))
+          if ([327, 328, 329, 333, 335, 344, 377, 378, 379, 384].includes(body.status as number))
             return { ok: false, reason: "NO_ROUTE" };
           if (body.status === 373) return { ok: false, reason: "ROUTE_TOO_LONG" };
-          if (body.status === 374) return { ok: false, reason: "INVALID_LOCATION" };
+          if ([365, 366, 374].includes(body.status as number))
+            return { ok: false, reason: "INVALID_LOCATION" };
           if (body.status === 500) return { ok: false, reason: "TIMEOUT" };
           if (typeof body.status === "number" && body.status >= 500 && body.status < 600)
             return { ok: false, reason: "PROVIDER_UNAVAILABLE" };

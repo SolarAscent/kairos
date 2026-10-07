@@ -1464,6 +1464,22 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.runtime.nowPending).toBeNull();
     page.onUnload();
   });
+  it("offers an entrance after routing fails and clears the hint when a route succeeds or the account resets", () => {
+    const page = mount((options) => success(options, routePreparation()));
+    const response = routePreparation();
+    for (const reason of ["INVALID_LOCATION", "NO_ROUTE"]) {
+      page.applyNow({ ...response, routeCheck: { status: "UNAVAILABLE", reason } });
+      expect(page.data.routeNeedsEntrance).toBe(true);
+      expect(page.data.mapDestination).toEqual(response.selectedDestination);
+    }
+    page.applyNow({ ...response, routeCheck: { status: "READY", reason: null } });
+    expect(page.data.routeNeedsEntrance).toBe(false);
+    page.applyNow({ ...response, routeCheck: { status: "UNAVAILABLE", reason: "NO_ROUTE" } });
+    page.resetSessionContent();
+    expect(page.data.routeNeedsEntrance).toBe(false);
+    expect(page.data.mapDestination).toBeNull();
+    page.onUnload();
+  });
   it("shows progress and map failure beside the same preparation card", async () => {
     const response = routePreparation();
     let point: any;

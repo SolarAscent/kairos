@@ -30,8 +30,9 @@
             <text class="route-privacy">路线仅保留在本次小程序会话中；退出登录后清除</text>
           </view>
           <view wx:if="{{(canVerifyRoute || routeView || recommendation.executionType === 'NAVIGATE') && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="destination-picker">
-            <button class="secondary" bindtap="chooseDestination" loading="{{mapPickerBusy}}" disabled="{{busy}}">{{routeView || mapDestination ? '地点不对，重新选择' : '在微信地图中搜索地点'}}</button>
-            <text class="route-privacy">使用微信地图搜索与选择你想去的位置</text>
+            <button class="secondary" bindtap="chooseDestination" loading="{{mapPickerBusy}}" disabled="{{busy}}">{{mapDestination && routeNeedsEntrance ? '选择目的地出入口' : (routeView || mapDestination ? '更换地点或选择出入口' : '在微信地图中搜索地点')}}</button>
+            <text wx:if="{{mapDestination && routeNeedsEntrance}}" class="route-privacy">校区、园区等大地点，可搜索具体校门或出入口；返回后再确认完整地址。</text>
+            <text wx:else class="route-privacy">使用微信地图搜索与选择你想去的位置</text>
           </view>
           <view wx:if="{{mapSelection}}" class="location-choices">
             <text class="location-choice-heading">确认你在微信地图选择的位置</text>

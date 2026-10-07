@@ -238,6 +238,7 @@ function createData() {
     mapSelection: null as Pick<PickedDestination, "name" | "address"> | null,
     mapDestination: null as NonNullable<NowResponse["selectedDestination"]> | null,
     hasConfirmedDestination: false,
+    routeNeedsEntrance: false,
     lifeStacks: [] as LifeStack[],
     lifeStacksLoaded: false,
     lifeStacksLoading: false,
@@ -303,6 +304,10 @@ Page({
       canVerifyRoute: needsRouteLocation(result),
       mapDestination,
       hasConfirmedDestination: !!mapDestination,
+      routeNeedsEntrance:
+        !!mapDestination &&
+        result.routeCheck?.status === "UNAVAILABLE" &&
+        ["NO_ROUTE", "INVALID_LOCATION"].includes(result.routeCheck.reason ?? ""),
     });
   },
   resetSessionContent() {
@@ -345,6 +350,7 @@ Page({
       canVerifyRoute: false,
       mapDestination: null,
       hasConfirmedDestination: false,
+      routeNeedsEntrance: false,
       lifeStacks: [],
       lifeStacksLoaded: false,
       lifeStacksLoading: false,

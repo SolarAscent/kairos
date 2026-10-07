@@ -45,9 +45,9 @@ describe("Tencent official route status meanings", () => {
   });
   it.each([
     [326, "ROUTE_TOO_CLOSE"],
-    ...[327, 328, 329, 335, 344, 377, 378, 379, 384].map((status) => [status, "NO_ROUTE"]),
+    ...[327, 328, 329, 333, 335, 344, 377, 378, 379, 384].map((status) => [status, "NO_ROUTE"]),
     [373, "ROUTE_TOO_LONG"],
-    [374, "INVALID_LOCATION"],
+    ...[365, 366, 374].map((status) => [status, "INVALID_LOCATION"]),
     [500, "TIMEOUT"],
     ...[510, 520, 530, 531, 599].map((status) => [status, "PROVIDER_UNAVAILABLE"]),
     [120, "RATE_LIMITED"],

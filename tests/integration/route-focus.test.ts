@@ -562,6 +562,35 @@ describe("targeted, bounded route checks", () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(2100);
     expect(Date.now() - start).toBeLessThan(4000);
   }, 10000);
+  it.each([true, false])(
+    "preserves a concrete route failure regardless of parallel completion order (%s)",
+    async (bikeFirst) => {
+      const stub: LocationProvider = {
+        ...provider,
+        routeForMode: async (_from, _to, mode) => {
+          if (mode !== "walking")
+            await new Promise((resolve) =>
+              setTimeout(resolve, (mode === "bicycling") === bikeFirst ? 1 : 20),
+            );
+          return {
+            ok: false,
+            reason:
+              mode === "walking"
+                ? "INVALID_LOCATION"
+                : mode === "bicycling"
+                  ? "NO_ROUTE"
+                  : "PROVIDER_REJECTED",
+          };
+        },
+      };
+      const result = await new BuildDecisionContextService(source.db, stub).enrichCandidates(
+        { location: { ...origin, source: "DEVICE" } },
+        [{ id: "campus", title: "synthetic campus", kind: "PLACE", location: destination }],
+        { compareModesForId: "campus" },
+      );
+      expect(result.campus).toEqual({ status: "UNAVAILABLE", reason: "INVALID_LOCATION" });
+    },
+  );
   it("returns only the selected real round trip, keeps its budget/time conditions and replays without new multimode calls", async () => {
     const user = await owner(),
       target = await seed(user),

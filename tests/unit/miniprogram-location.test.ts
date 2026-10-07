@@ -55,7 +55,8 @@ describe("native location acquisition", () => {
     expect(routeUnavailableMessage("TIMEOUT")).toContain("超时");
     expect(routeUnavailableMessage("QUOTA_EXCEEDED")).toContain("额度");
     expect(routeUnavailableMessage("DESTINATION_UNRESOLVED")).toContain("具体");
-    expect(routeUnavailableMessage("PROVIDER_REJECTED")).toContain("城市");
+    expect(routeUnavailableMessage("PROVIDER_REJECTED")).toContain("出入口");
+    expect(routeUnavailableMessage("INVALID_LOCATION")).toContain("起点与目的地");
     expect(routeUnavailableMessage("INVALID_RESPONSE")).toContain("位置已取得");
     expect(routeUnavailableMessage("NO_ROUTE")).not.toContain("步行");
     expect(routeUnavailableMessage("ROUTE_TOO_CLOSE")).toContain("距离很近");

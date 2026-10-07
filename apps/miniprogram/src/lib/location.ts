@@ -68,10 +68,11 @@ export function routeUnavailableMessage(reason?: string | null) {
     NO_ROUTE: "地图暂未找到可用的往返路线，请确认目的地入口或在微信地图中核对。",
     ROUTE_TOO_CLOSE: "你与目的地距离很近，地图无需规划往返路线；请确认具体入口。",
     ROUTE_TOO_LONG: "目的地较远，已超出当前路线查询范围，请先确认跨城交通安排。",
-    PROVIDER_REJECTED: "地图未能解析本次查询，请确认目的地的城市和具体场所后重试。",
+    PROVIDER_REJECTED: "地点已保存，但地图暂未能规划这次路线；可重新核对或选择目的地的具体出入口。",
     PROVIDER_UNAVAILABLE: "地图服务暂时未响应，位置已取得，请稍后重新核对。",
     INVALID_RESPONSE: "地图返回的路线暂时无法核实，位置已取得，请稍后重新核对。",
-    INVALID_LOCATION: "地图无法使用本次位置，请重新定位并核对目的地。",
+    INVALID_LOCATION:
+      "地图无法连接本次起点与目的地；请重新定位，或在地图中选择目的地的具体出入口。",
     LOOKUP_LIMIT: "本次尚未查询到这条心愿，请重新核对。",
     NOT_CONFIGURED: "路线服务暂时不可用，原建议还在。",
     ORIGIN_NOT_PRECISE: "还没有取得当前位置，请允许定位后重新核对。",
