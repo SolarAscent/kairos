@@ -33,6 +33,17 @@
             <text class="route-privacy">位置仅用于本次建议与腾讯地图路线查询</text>
           </view>
           <text wx:if="{{departureReason && !routeView}}" class="route-blocker">{{departureReason}}</text>
+          <view wx:if="{{locationChoices.length}}" class="location-choices">
+            <text class="location-choice-heading">{{locationChoices.length > 1 ? '你想去的是哪个地点？' : '确认一下这个地点'}}</text>
+            <text class="route-privacy">请核对城市和完整地址，确认后再安排路线。</text>
+            <button wx:for="{{locationChoices}}" wx:key="choiceKey" class="location-choice" data-index="{{index}}" bindtap="selectLocationChoice" disabled="{{busy}}">
+              <text class="location-choice-city">{{item.city}}{{item.district ? ' · ' + item.district : ''}}</text>
+              <text class="location-choice-title">{{item.title}}</text>
+              <text class="location-choice-address">{{item.address}}</text>
+            </button>
+            <text wx:if="{{locationChoiceBusy}}" class="route-status">正在确认地点…</text>
+            <button class="text-button" bindtap="cancelLocationChoices" disabled="{{locationChoiceBusy}}">取消，保留原建议</button>
+          </view>
           <view class="action-row">
             <button wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}" class="primary" data-type="COMPLETE" bindtap="feedback" disabled="{{busy}}">完成这一步</button>
             <button wx:else class="primary" data-type="ACCEPT" bindtap="feedback" disabled="{{busy}}" loading="{{busy}}">就做这个</button>

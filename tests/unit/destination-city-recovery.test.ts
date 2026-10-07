@@ -36,6 +36,33 @@ const context = { availableMinutes: 60, location: { ...origin, source: "DEVICE" 
 const school = { id: "school", title: "松山湖中心小学", kind: "PLACE", address: "松山湖中心小学" };
 
 describe("request-local destination city recovery", () => {
+  it("presents nationwide matches instead of silently choosing the origin city's match", async () => {
+    const { service, provider, geocode, cityForLocation } = setup();
+    provider.searchChoices = vi
+      .fn()
+      .mockResolvedValue({ ok: true, value: [{ id: "provider-match" }] });
+    const result = await service.enrichCandidates(context, [school], {
+      compareModesForId: school.id,
+    });
+    expect(result.school).toMatchObject({ status: "UNAVAILABLE", reason: "AMBIGUOUS_ADDRESS" });
+    expect(provider.searchChoices).toHaveBeenCalledWith(
+      school.address,
+      undefined,
+      expect.any(AbortSignal),
+    );
+    expect(geocode).not.toHaveBeenCalled();
+    expect(cityForLocation).not.toHaveBeenCalled();
+    expect(provider.route).not.toHaveBeenCalled();
+  });
+  it("does not replace a failed candidate search with a nearby-city guess", async () => {
+    const { service, provider, geocode } = setup();
+    provider.searchChoices = vi.fn().mockResolvedValue({ ok: false, reason: "QUOTA_EXCEEDED" });
+    const result = await service.enrichCandidates(context, [school], {
+      compareModesForId: school.id,
+    });
+    expect(result.school).toMatchObject({ reason: "QUOTA_EXCEEDED" });
+    expect(geocode).not.toHaveBeenCalled();
+  });
   it("uses verified origin city to resolve an otherwise unscoped exact place and checks both journeys", async () => {
     const { service, geocode, cityForLocation, provider } = setup();
     const result = await service.enrichCandidates(context, [school]);

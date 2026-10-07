@@ -18,8 +18,19 @@ export interface GeocodedPlace {
   region?: string;
   reliability?: number;
   level?: number;
-  verificationMethod?: "GEOCODE" | "POI_SEARCH";
+  verificationMethod?: "GEOCODE" | "POI_SEARCH" | "USER_SELECTED_POI";
   poi?: VerifiedPoi;
+  selection?: PoiChoice;
+}
+export interface PoiChoice {
+  id: string;
+  title: string;
+  address: string;
+  city: string;
+  province: string;
+  district?: string;
+  location: GeoPoint;
+  match: "EXACT_NAME" | "EXACT_ADDRESS";
 }
 export interface VerifiedPoi {
   id: string;
@@ -144,6 +155,11 @@ export interface LocationProvider {
   readonly configured: boolean;
   geocode(address: string, city?: string, signal?: AbortSignal): Promise<MapResult<GeocodedPlace>>;
   cityForLocation?(origin: GeoPoint, signal?: AbortSignal): Promise<MapResult<{ city: string }>>;
+  searchChoices?(
+    address: string,
+    city?: string,
+    signal?: AbortSignal,
+  ): Promise<MapResult<PoiChoice[]>>;
   route(from: GeoPoint, to: GeoPoint, signal?: AbortSignal): Promise<MapResult<RouteEstimate>>;
   routeForMode?(
     from: GeoPoint,
@@ -249,6 +265,11 @@ function searchScope(address: string, suppliedCity?: string) {
   const district = afterCity.match(/^([\p{Script=Han}]{1,8}?(?:区|县))/u)?.[1];
   return { city, province, district };
 }
+function hasAdministrativeCityPrefix(address: string) {
+  return /^(?:中国)?(?:[\p{Script=Han}]{2,6}?(?:省|自治区))?[\p{Script=Han}]{2,10}?市/u.test(
+    identity(address),
+  );
+}
 function poiMatch(
   query: string,
   title: string,
@@ -287,12 +308,126 @@ export function canUseOriginCityForAddress(address: string, suppliedCity?: strin
     !/^[\p{Script=Han}]{1,20}?(?:省|自治区|特别行政区|自治州|地区|盟|市|区|县)/u.test(value)
   );
 }
+/** Unqualified names require a user's choice even if the nearest city has only one match. */
+export function requiresCityConfirmation(address: string, suppliedCity?: string): boolean {
+  const named = identity(address);
+  const scope = searchScope(address);
+  return (
+    Boolean(named) &&
+    address.length <= 240 &&
+    !suppliedCity?.trim() &&
+    !hasAdministrativeCityPrefix(address) &&
+    !genericQuery(named) &&
+    !coarseRegions.test(named) &&
+    !(scope && sameCity(named, scope.city)) &&
+    !/^[\p{Script=Han}]{1,20}(?:省|自治区|特别行政区|自治州|地区|盟|市|区|县)$/u.test(named)
+  );
+}
+function validPoiChoice(choice: PoiChoice): boolean {
+  return (
+    typeof choice.id === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/u.test(choice.id) &&
+    typeof choice.title === "string" &&
+    Boolean(choice.title.trim()) &&
+    choice.title.length <= 240 &&
+    typeof choice.address === "string" &&
+    Boolean(choice.address.trim()) &&
+    choice.address.length <= 500 &&
+    typeof choice.city === "string" &&
+    /^[\p{Script=Han}]{2,20}$/u.test(choice.city) &&
+    !coarseRegions.test(choice.city) &&
+    typeof choice.province === "string" &&
+    /^[\p{Script=Han}]{2,30}$/u.test(choice.province) &&
+    (choice.district == null ||
+      (typeof choice.district === "string" && /^[\p{Script=Han}]{0,30}$/u.test(choice.district))) &&
+    isGeoPoint(choice.location) &&
+    choice.location.latitude >= 18 &&
+    choice.location.latitude <= 54 &&
+    choice.location.longitude >= 73 &&
+    choice.location.longitude <= 135 &&
+    !sameCity(choice.title, choice.city) &&
+    identity(choice.title) !== identity(choice.province) &&
+    (!choice.district || identity(choice.title) !== identity(choice.district))
+  );
+}
+function choiceMatch(choice: PoiChoice, query: { address: string; city?: string }) {
+  if (
+    !validPoiChoice(choice) ||
+    !query.address.trim() ||
+    query.address.length > 240 ||
+    genericQuery(query.address) ||
+    coarseRegions.test(identity(query.address))
+  )
+    return undefined;
+  const exactTitle = identity(query.address) === identity(choice.title);
+  const declaredScope =
+    exactTitle && !hasAdministrativeCityPrefix(query.address)
+      ? query.city?.trim()
+        ? searchScope("", query.city)
+        : undefined
+      : searchScope(query.address, query.city);
+  if (query.city?.trim() && !declaredScope) return undefined;
+  if (
+    declaredScope &&
+    (!sameCity(declaredScope.city, choice.city) ||
+      (declaredScope.province && identity(declaredScope.province) !== identity(choice.province)) ||
+      (declaredScope.district && declaredScope.district !== choice.district))
+  )
+    return undefined;
+  const named = identity(query.address);
+  const explicitProvince = named.match(
+    /^(?:中国)?([\p{Script=Han}]{2,6}?(?:省|自治区|特别行政区))/u,
+  )?.[1];
+  const shortProvince = named.match(administrativeRegionPrefix)?.[0];
+  if (
+    (explicitProvince && identity(explicitProvince) !== identity(choice.province)) ||
+    (shortProvince &&
+      !["全国", "中国"].includes(shortProvince) &&
+      !identity(choice.province).startsWith(shortProvince))
+  )
+    return undefined;
+  const scope = {
+    province: choice.province,
+    city: choice.city,
+    district: choice.district,
+  };
+  const matchWithCity = (address: string) => {
+    for (const city of new Set([choice.city, choice.city.replace(/市$/u, "")])) {
+      const match = poiMatch(address, choice.title, choice.address, { ...scope, city });
+      if (match) return match;
+    }
+    return undefined;
+  };
+  const exact = matchWithCity(query.address);
+  if (exact) return exact;
+  // A stated provincial abbreviation remains a constraint, not a fuzzy venue alias.
+  if (shortProvince && !["全国", "中国"].includes(shortProvince))
+    return matchWithCity(named.slice(shortProvince.length));
+  return undefined;
+}
 /** Validates persisted provenance as well as adapter results; POI never impersonates geocoder precision. */
 export function isVerifiedGeocodedPlace(
   value: GeocodedPlace,
   query?: { address: string; city?: string },
 ): boolean {
   if (!isGeoPoint(value.location)) return false;
+  if (value.verificationMethod === "USER_SELECTED_POI") {
+    const selection = value.selection;
+    const match = query && selection ? choiceMatch(selection, query) : undefined;
+    return Boolean(
+      query &&
+      selection &&
+      match &&
+      match === selection.match &&
+      selection.location.latitude === value.location.latitude &&
+      selection.location.longitude === value.location.longitude &&
+      (value.city == null ||
+        (typeof value.city === "string" && sameCity(value.city, selection.city))) &&
+      (value.region == null ||
+        (typeof value.region === "string" &&
+          identity(value.region) === identity(selection.province))),
+    );
+  }
   if (value.verificationMethod !== "POI_SEARCH")
     return (
       (value.verificationMethod == null || value.verificationMethod === "GEOCODE") &&
@@ -359,6 +494,10 @@ export function tencentSignature(
 export class TencentLbsAdapter implements LocationProvider {
   private static readonly turns = new Map<string, Promise<void>>();
   private static readonly lastStarted = new Map<string, number>();
+  private static readonly choiceCaches = new WeakMap<
+    typeof fetch,
+    Map<string, { expiresAt: number; choices: PoiChoice[] }>
+  >();
   readonly configured: boolean;
   private readonly key: string;
   private readonly secret: string;
@@ -485,6 +624,200 @@ export class TencentLbsAdapter implements LocationProvider {
         verificationMethod: "GEOCODE",
         ...(typeof components.city === "string" ? { city: components.city } : {}),
         ...(typeof components.province === "string" ? { region: components.province } : {}),
+      },
+    };
+  }
+  async searchChoices(
+    address: string,
+    city?: string,
+    signal?: AbortSignal,
+  ): Promise<MapResult<PoiChoice[]>> {
+    if (!this.configured) return { ok: false, reason: "NOT_CONFIGURED" };
+    if (signal?.aborted) return { ok: false, reason: "TIMEOUT" };
+    let cache = TencentLbsAdapter.choiceCaches.get(this.transport);
+    if (!cache) {
+      cache = new Map();
+      TencentLbsAdapter.choiceCaches.set(this.transport, cache);
+    }
+    const credential = createHash("sha256")
+      .update(JSON.stringify([this.key, this.secret]))
+      .digest("hex");
+    const cacheKey = createHash("sha256")
+      .update(JSON.stringify([credential, address, city ?? ""]))
+      .digest("hex");
+    const now = Date.now();
+    for (const [key, entry] of cache) if (entry.expiresAt <= now) cache.delete(key);
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      cache.delete(cacheKey);
+      cache.set(cacheKey, cached);
+      return { ok: true, value: structuredClone(cached.choices) };
+    }
+    const result = await this.searchChoicesUncached(address, city, signal);
+    if (signal?.aborted) return { ok: false, reason: "TIMEOUT" };
+    if (result.ok && result.value.length) {
+      cache.set(cacheKey, {
+        expiresAt: Date.now() + 3 * 60000,
+        choices: structuredClone(result.value),
+      });
+      while (cache.size > 100) cache.delete(cache.keys().next().value!);
+    }
+    return result;
+  }
+  private async searchChoicesUncached(
+    address: string,
+    city?: string,
+    signal?: AbortSignal,
+  ): Promise<MapResult<PoiChoice[]>> {
+    if (signal?.aborted) return { ok: false, reason: "TIMEOUT" };
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop: (() => void) | undefined;
+    const deadline = new Promise<MapResult<PoiChoice[]>>((resolve) => {
+      stop = () => {
+        abort.abort();
+        resolve({ ok: false, reason: "TIMEOUT" });
+      };
+      timer = setTimeout(stop, 4000);
+      signal?.addEventListener("abort", stop, { once: true });
+    });
+    const work = async (): Promise<MapResult<PoiChoice[]>> => {
+      const first = await this.choicesPage(address, city, abort.signal);
+      if (!first.ok) return first;
+      const choices = new Map(first.value.choices.map((choice) => [choice.id, choice]));
+      if (choices.size >= 6 || !first.value.clusterCities.length)
+        return { ok: true, value: [...choices.values()].slice(0, 6) };
+      const pages = await Promise.all(
+        first.value.clusterCities
+          .slice(0, 3)
+          .map((city) => this.choicesPage(address, city, abort.signal)),
+      );
+      let failure: MapFailure | undefined;
+      for (const page of pages) {
+        if (!page.ok) {
+          failure ??= page.reason;
+          continue;
+        }
+        for (const choice of page.value.choices) {
+          const prior = choices.get(choice.id);
+          if (prior && JSON.stringify(prior) !== JSON.stringify(choice))
+            return { ok: false, reason: "INVALID_RESPONSE" };
+          choices.set(choice.id, choice);
+        }
+      }
+      return !choices.size && failure
+        ? { ok: false, reason: failure }
+        : { ok: true, value: [...choices.values()].slice(0, 6) };
+    };
+    try {
+      return await Promise.race([work(), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (stop) signal?.removeEventListener("abort", stop);
+      abort.abort();
+    }
+  }
+  private async choicesPage(
+    address: string,
+    city?: string,
+    signal?: AbortSignal,
+  ): Promise<MapResult<{ choices: PoiChoice[]; clusterCities: string[] }>> {
+    if (!this.configured) return { ok: false, reason: "NOT_CONFIGURED" };
+    const declaredScope = searchScope(address);
+    const scope = hasAdministrativeCityPrefix(address)
+      ? searchScope(address, city)
+      : city?.trim()
+        ? searchScope("", city)
+        : undefined;
+    if (
+      !address.trim() ||
+      address.length > 240 ||
+      Buffer.byteLength(address, "utf8") > 96 ||
+      genericQuery(address) ||
+      coarseRegions.test(identity(address)) ||
+      (city?.trim() && !scope) ||
+      (declaredScope && sameCity(address, declaredScope.city))
+    )
+      return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+    const response = await this.request(
+      "/ws/place/v1/search",
+      {
+        keyword: address.trim(),
+        boundary: `region(${scope?.city ?? "全国"},0)`,
+        page_size: "20",
+        page_index: "1",
+        output: "json",
+      },
+      signal,
+    );
+    if (!response.ok) return response;
+    const count = response.value.count,
+      data = response.value.data;
+    if (
+      !Number.isSafeInteger(count) ||
+      (count as number) < 0 ||
+      !Array.isArray(data) ||
+      data.length > 20 ||
+      data.length > (count as number)
+    )
+      return { ok: false, reason: "INVALID_RESPONSE" };
+    const choices = new Map<string, PoiChoice>(),
+      seen = new Map<string, string>();
+    // Total results and city clusters never constitute evidence of uniqueness.
+    for (const entry of data) {
+      const row = record(entry),
+        ad = record(row.ad_info),
+        point = record(row.location);
+      if (typeof row.id !== "string" || !row.id) continue;
+      const signature = JSON.stringify([
+        row.title,
+        row.address,
+        row.type,
+        point.lat,
+        point.lng,
+        ad.city,
+        ad.province,
+        ad.district,
+      ]);
+      if (seen.has(row.id) && seen.get(row.id) !== signature)
+        return { ok: false, reason: "INVALID_RESPONSE" };
+      seen.set(row.id, signature);
+      if (![0, 1, 2].includes(row.type as number)) continue;
+      const choice: PoiChoice = {
+        id: row.id,
+        title: row.title as string,
+        address: row.address as string,
+        city: ad.city as string,
+        province: ad.province as string,
+        ...(typeof ad.district === "string" && ad.district ? { district: ad.district } : {}),
+        location: {
+          latitude: point.lat,
+          longitude: point.lng,
+          coordinateSystem: "GCJ02",
+        } as GeoPoint,
+        match: "EXACT_NAME",
+      };
+      const match = choiceMatch(choice, { address, city });
+      if (!match) continue;
+      choices.set(choice.id, { ...choice, match });
+    }
+    const clusterCities = new Map<string, string>();
+    if (!scope && Array.isArray(response.value.cluster))
+      for (const entry of response.value.cluster) {
+        const cluster = record(entry);
+        if (
+          typeof cluster.title === "string" &&
+          Number.isSafeInteger(cluster.count) &&
+          (cluster.count as number) > 0 &&
+          searchScope(address, cluster.title)
+        )
+          clusterCities.set(identity(cluster.title).replace(/市$/u, ""), cluster.title.trim());
+      }
+    return {
+      ok: true,
+      value: {
+        choices: [...choices.values()].slice(0, 6),
+        clusterCities: [...clusterCities.values()].slice(0, 3),
       },
     };
   }

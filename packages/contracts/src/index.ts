@@ -666,6 +666,39 @@ export const locationRefreshAcceptedSchema = z.object({
 });
 export type LocationRefreshRequest = z.infer<typeof locationRefreshRequestSchema>;
 
+export const locationChoicesRequestSchema = z
+  .object({
+    lifeObjectId: uuidSchema,
+  })
+  .strict();
+export const locationChoiceSchema = z.object({
+  token: z.string().min(1).max(8192),
+  title: z.string().min(1).max(240),
+  address: z.string().min(1).max(512),
+  city: z.string().min(1).max(80),
+  district: z.string().max(80).optional(),
+});
+export const locationChoicesResponseSchema = z.object({
+  lifeObjectId: uuidSchema,
+  choices: z.array(locationChoiceSchema).max(6),
+  expiresAt: z.iso.datetime(),
+  reason: z.string().max(64).nullable(),
+});
+export const locationSelectRequestSchema = z
+  .object({
+    lifeObjectId: uuidSchema,
+    choiceToken: z.string().min(1).max(8192),
+  })
+  .strict();
+export const locationSelectResponseSchema = z.object({
+  lifeObjectId: uuidSchema,
+  selected: z.literal(true),
+  replayed: z.boolean(),
+});
+export type LocationChoicesRequest = z.infer<typeof locationChoicesRequestSchema>;
+export type LocationSelectRequest = z.infer<typeof locationSelectRequestSchema>;
+export type LocationChoice = z.infer<typeof locationChoiceSchema>;
+
 export const lifeRatingSchema = z.enum(["LIKE", "DISLIKE", "NONE"]);
 export const setLifeRatingRequestSchema = z.strictObject({ rating: lifeRatingSchema });
 export const lifeRatingAcceptedSchema = z.object({

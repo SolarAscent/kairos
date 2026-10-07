@@ -728,6 +728,310 @@ describe("Home context and multimodal input interactions", () => {
       ],
     };
   }
+  function destinationChoices(
+    config: {
+      choices?: any[];
+      choicesSend?: (options: any, result: any) => void;
+      selectSend?: (options: any, result: any) => void;
+    } = {},
+  ) {
+    const response = routePreparation();
+    const target = response.recommendation.targetLifeObjectId;
+    const choices = config.choices ?? [
+      {
+        token: "guangzhou-secret-token",
+        title: "同名书店",
+        city: "广州市",
+        district: "天河区",
+        address: "体育东路 10 号",
+      },
+      {
+        token: "shanghai-secret-token",
+        title: "同名书店",
+        city: "上海市",
+        district: "徐汇区",
+        address: "漕溪北路 10 号",
+      },
+    ];
+    const writes: any[] = [];
+    let locations = 0;
+    let nowCount = 0;
+    const stored: unknown[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method !== "POST") return success(options, []);
+        writes.push(options);
+        if (options.url.endsWith("/locations/choices")) {
+          const result = {
+            lifeObjectId: target,
+            choices,
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+            reason: "AMBIGUOUS_ADDRESS",
+          };
+          return config.choicesSend
+            ? config.choicesSend(options, result)
+            : success(options, result);
+        }
+        if (options.url.endsWith("/locations/select")) {
+          const result = { lifeObjectId: target, selected: true, replayed: false };
+          return config.selectSend ? config.selectSend(options, result) : success(options, result);
+        }
+        nowCount++;
+        success(
+          options,
+          nowCount === 1
+            ? response
+            : nowCount === 2
+              ? {
+                  ...response,
+                  routeCheck: { status: "UNAVAILABLE", reason: "AMBIGUOUS_ADDRESS" },
+                }
+              : {
+                  ...response,
+                  sessionId: randomUUID(),
+                  routeCheck: {
+                    status: "READY",
+                    reason: null,
+                    detail: {
+                      origin: { latitude: 23.1, longitude: 113.2, coordinateSystem: "GCJ02" },
+                      destination: { latitude: 31.2, longitude: 121.4, coordinateSystem: "GCJ02" },
+                      destinationLabel: "上海同名书店",
+                      mode: "walking",
+                      outwardSeconds: 600,
+                      returnSeconds: 700,
+                      outwardMeters: 900,
+                      returnMeters: 1000,
+                      departureBlocker: "DURATION_UNKNOWN",
+                      requiredSeconds: null,
+                    },
+                  },
+                },
+        );
+      },
+      false,
+      "home",
+      {
+        getLocation: (options: any) => {
+          locations++;
+          options.success({ latitude: 23.1, longitude: 113.2 });
+        },
+        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+      },
+    );
+    return { page, writes, target, response, choices, stored, locations: () => locations };
+  }
+  const choiceTap = (index: number) => ({ currentTarget: { dataset: { index } } });
+  it("shows the choices provider quota failure instead of the earlier ambiguous-address failure", async () => {
+    const { page, writes } = destinationChoices({
+      choicesSend: (options, result) =>
+        success(options, { ...result, choices: [], reason: "QUOTA_EXCEEDED" }),
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.data.error).toContain("额度");
+    expect(page.data.error).not.toContain("不明确");
+    expect(page.data.locationChoices).toEqual([]);
+    expect(page.runtime.choiceContext).toBeNull();
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.data.busy).toBe(false);
+    expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+    page.onUnload();
+  });
+  it("shows full city choices without choosing automatically, then confirms only the tapped city and recomputes Now", async () => {
+    const { page, writes, target, stored, locations } = destinationChoices();
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.data.locationChoices).toMatchObject([
+      { city: "广州市", district: "天河区", address: "体育东路 10 号" },
+      { city: "上海市", district: "徐汇区", address: "漕溪北路 10 号" },
+    ]);
+    expect(writes.filter((item) => item.url.endsWith("/locations/select"))).toEqual([]);
+    expect(writes.find((item) => item.url.endsWith("/locations/choices")).data).toEqual({
+      lifeObjectId: target,
+    });
+    expect(JSON.stringify(page.data)).not.toContain("secret-token");
+    expect(JSON.stringify(page.data)).not.toContain("113.2");
+    const oldSession = page.data.sessionId;
+    page.services.routeCache.set(userId, target, {
+      view: { longitude: 100 },
+      departureReason: "旧路线",
+    });
+    await page.selectLocationChoice(choiceTap(1));
+    const selection = writes.find((item) => item.url.endsWith("/locations/select"));
+    expect(selection.data).toEqual({ lifeObjectId: target, choiceToken: "shanghai-secret-token" });
+    expect(selection.header["X-Idempotency-Key"]).toMatch(/^[0-9a-f-]{36}$/);
+    const now = writes.filter((item) => item.url.endsWith("/now/sessions"));
+    expect(now).toHaveLength(3);
+    expect(now[2].data).toMatchObject({
+      focusObjectId: target,
+      context: { location: { latitude: 23.1, longitude: 113.2 } },
+    });
+    expect(now[2].header["X-Idempotency-Key"]).not.toBe(now[1].header["X-Idempotency-Key"]);
+    expect(locations()).toBe(1);
+    expect(page.data.sessionId).not.toBe(oldSession);
+    expect(page.data.routeView.destinationLabel).toBe("上海同名书店");
+    expect(page.services.routeCache.get(userId, target).view.longitude).toBe(121.4);
+    expect(page.data.locationChoices).toEqual([]);
+    expect(page.runtime.choiceContext).toBeNull();
+    expect(stored).toEqual([]);
+    page.onUnload();
+  });
+  it("requires confirmation even for a single choice and cancelling preserves the original recommendation", async () => {
+    const { page, writes, response } = destinationChoices({
+      choices: [
+        { token: "single-secret", title: "书店", city: "广州市", address: "体育东路 10 号" },
+      ],
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    expect(page.data.locationChoices).toHaveLength(1);
+    expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+    page.cancelLocationChoices();
+    expect(page.data.recommendation).toEqual(response.recommendation);
+    expect(page.data.locationChoices).toEqual([]);
+    expect(page.runtime.choiceContext).toBeNull();
+    expect(page.data.notice).toContain("原建议保留");
+    await page.selectLocationChoice(choiceTap(0));
+    expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+    page.onUnload();
+  });
+  it.each(["hide", "unload", "logout", "focus"])(
+    "discards an outstanding choices response after %s",
+    async (change) => {
+      let pending: any;
+      let result: any;
+      const { page, writes } = destinationChoices({
+        choicesSend: (options, data) => {
+          pending = options;
+          result = data;
+        },
+      });
+      await page.decide();
+      const query = page.verifyCurrentRoute();
+      await expect.poll(() => !!pending).toBe(true);
+      if (change === "hide") page.onHide();
+      if (change === "unload") page.onUnload();
+      if (change === "logout") {
+        page.services.client.clear();
+        page.onShow();
+      }
+      if (change === "focus")
+        page.updateData({ recommendation: routePreparation().recommendation });
+      success(pending, result);
+      await query;
+      expect(page.data.locationChoices).toEqual([]);
+      expect(page.runtime.choiceContext).toBeNull();
+      await page.selectLocationChoice(choiceTap(0));
+      expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+      expect(page.data.busy).toBe(false);
+      if (change !== "unload") page.onUnload();
+    },
+  );
+  it("clears displayed tokens on hide and ignores a late selection receipt", async () => {
+    let pending: any;
+    let result: any;
+    const { page, writes, locations } = destinationChoices({
+      selectSend: (options, data) => {
+        pending = options;
+        result = data;
+      },
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    const selecting = page.selectLocationChoice(choiceTap(1));
+    await expect.poll(() => !!pending).toBe(true);
+    page.onHide();
+    expect(page.data.locationChoices).toEqual([]);
+    expect(page.runtime.choiceContext).toBeNull();
+    success(pending, result);
+    await selecting;
+    expect(writes.filter((item) => item.url.endsWith("/now/sessions"))).toHaveLength(2);
+    expect(locations()).toBe(1);
+    expect(page.data.routeView).toBeNull();
+    expect(page.data.busy).toBe(false);
+    page.onUnload();
+  });
+  it.each(["logout", "focus"])(
+    "clears already displayed choices and tokens after %s",
+    async (change) => {
+      const { page, writes } = destinationChoices();
+      await page.decide();
+      await page.verifyCurrentRoute();
+      expect(page.data.locationChoices).toHaveLength(2);
+      if (change === "logout") {
+        page.services.client.clear();
+        page.onShow();
+      } else page.updateData({ recommendation: routePreparation().recommendation });
+      expect(page.data.locationChoices).toEqual([]);
+      expect(page.runtime.choiceContext).toBeNull();
+      expect(page.runtime.choiceOriginTimer).toBeUndefined();
+      await page.selectLocationChoice(choiceTap(1));
+      expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+      page.onUnload();
+    },
+  );
+  it("reuses a selection idempotency key after a lost receipt and prevents switching that unresolved selection", async () => {
+    let attempts = 0;
+    const { page, writes } = destinationChoices({
+      selectSend: (options, result) => {
+        if (++attempts === 1) options.fail({ errMsg: "offline" });
+        else success(options, { ...result, replayed: true });
+      },
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    await page.selectLocationChoice(choiceTap(1));
+    expect(page.data.locationChoices).toHaveLength(2);
+    await page.selectLocationChoice(choiceTap(0));
+    expect(page.data.error).toContain("重试原来的地点");
+    expect(attempts).toBe(1);
+    await page.selectLocationChoice(choiceTap(1));
+    const selections = writes.filter((item) => item.url.endsWith("/locations/select"));
+    expect(selections).toHaveLength(2);
+    expect(selections[1].header["X-Idempotency-Key"]).toBe(
+      selections[0].header["X-Idempotency-Key"],
+    );
+    expect(page.data.routeView.destinationLabel).toBe("上海同名书店");
+    page.onUnload();
+  });
+  it.each([
+    ["LOCATION_CHOICES_EXPIRED", "过期"],
+    ["LOCATION_CHOICE_INVALID", "失效"],
+    ["LOCATION_OBJECT_CHANGED", "心愿已更新"],
+  ])("offers a friendly fresh check after %s", async (code, message) => {
+    const { page, writes } = destinationChoices({
+      selectSend: (options) =>
+        options.success({ statusCode: 409, data: { error: { code, request_id: requestId } } }),
+    });
+    await page.decide();
+    await page.verifyCurrentRoute();
+    await page.selectLocationChoice(choiceTap(0));
+    expect(page.data.error).toContain(message);
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.data.locationChoices).toEqual([]);
+    expect(page.runtime.choiceContext).toBeNull();
+    expect(page.data.busy).toBe(false);
+    expect(writes.filter((item) => item.url.endsWith("/now/sessions"))).toHaveLength(2);
+    page.onUnload();
+  });
+  it("never sends locally expired tokens and acquires a fresh point when the saved origin has expired", async () => {
+    const first = destinationChoices();
+    await first.page.decide();
+    await first.page.verifyCurrentRoute();
+    first.page.runtime.choiceContext.choiceExpiresAt = Date.now() - 1;
+    await first.page.selectLocationChoice(choiceTap(0));
+    expect(first.writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
+    expect(first.page.data.error).toContain("过期");
+    first.page.onUnload();
+    const second = destinationChoices();
+    await second.page.decide();
+    await second.page.verifyCurrentRoute();
+    second.page.runtime.choiceContext.expiresAt = Date.now() - 1;
+    await second.page.selectLocationChoice(choiceTap(0));
+    expect(second.locations()).toBe(2);
+    expect(second.page.data.routeView).not.toBeNull();
+    second.page.onUnload();
+  });
   it("requests GCJ02 location only after the explicit route button and submits ephemeral device context", async () => {
     const writes: any[] = [];
     const stored: unknown[] = [];

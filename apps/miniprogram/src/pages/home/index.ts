@@ -13,10 +13,15 @@ import {
   lifeRatingAcceptedSchema,
   lifeDeletedSchema,
   nowResponseSchema,
+  locationChoicesRequestSchema,
+  locationChoicesResponseSchema,
+  locationSelectRequestSchema,
+  locationSelectResponseSchema,
   type CaptureResponse,
   type LifeSections,
   type NowContext,
   type NowResponse,
+  type LocationChoice,
 } from "@life/contracts";
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
@@ -32,6 +37,30 @@ import { createLifeStack, type LifeStack } from "../../lib/life";
 const { client, sessionStore, routeCache } = getApp<{ globalData: AppServices }>().globalData;
 
 type Pending = { signature: string; key: string };
+type ChoiceOrigin = {
+  owner: string;
+  target: string;
+  generation: number;
+  expiresAt: number;
+  location: NonNullable<NowContext["location"]> | null;
+};
+type ChoiceContext = ChoiceOrigin & {
+  choices: LocationChoice[];
+  choiceExpiresAt: number;
+  pending: (Pending & { index: number }) | null;
+};
+function locationChoiceMessage(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  return (
+    (
+      {
+        LOCATION_CHOICES_EXPIRED: "地点选项已过期，请重新核对地点后再选。",
+        LOCATION_CHOICE_INVALID: "这个地点选项已失效，请重新核对地点后再选。",
+        LOCATION_OBJECT_CHANGED: "这条心愿已更新，请重新核对地点后再选。",
+      } as Record<string, string>
+    )[code] ?? userMessage(error)
+  );
+}
 type HomeCard = {
   id: string;
   title: string;
@@ -91,6 +120,9 @@ function createRuntime() {
     nowPending: null as Pending | null,
     requestLocation: null as NowContext["location"] | null,
     locationGeneration: 0,
+    choiceEpoch: 0,
+    choiceContext: null as ChoiceContext | null,
+    choiceOriginTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     pendingDecisionCaptureId: "",
     decisionRefresh: undefined as ReturnType<typeof setTimeout> | undefined,
     feedbackPending: null as (Pending & { clientEventId: string }) | null,
@@ -157,6 +189,8 @@ function createData() {
     routeStatus: "",
     routeView: null as ReturnType<typeof createRouteView>,
     departureReason: "",
+    locationChoices: [] as (Omit<LocationChoice, "token"> & { choiceKey: string })[],
+    locationChoiceBusy: false,
     lifeStacks: [] as LifeStack[],
     lifeStacksLoaded: false,
     lifeStacksLoading: false,
@@ -174,6 +208,10 @@ Page({
       const target = values.recommendation?.targetLifeObjectId;
       const cached = routeCache.get(client.userId, target);
       const sameTarget = target === this.data.recommendation?.targetLifeObjectId;
+      if (!sameTarget) {
+        this.clearLocationChoices();
+        if (this.data.routeLocationBusy) this.clearRequestLocation();
+      }
       this.setData({
         ...values,
         routeView: cached?.view ?? null,
@@ -1141,10 +1179,142 @@ Page({
     state.locationGeneration++;
     state.nowPending = null;
     state.requestLocation = null;
+    this.clearLocationChoices();
     if (this.data.routeLocationBusy)
       this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
   },
   async verifyCurrentRoute() {
+    if (this.data.busy) return;
+    this.clearLocationChoices();
+    await this.runRouteVerification();
+  },
+  clearLocationChoices() {
+    this.runtime.choiceEpoch++;
+    this.runtime.choiceContext = null;
+    if (this.runtime.choiceOriginTimer) clearTimeout(this.runtime.choiceOriginTimer);
+    this.runtime.choiceOriginTimer = undefined;
+    this.updateData({
+      locationChoices: [],
+      locationChoiceBusy: false,
+      ...(this.data.locationChoiceBusy ? { busy: false, routeStatus: "" } : {}),
+    });
+  },
+  cancelLocationChoices() {
+    if (this.data.locationChoiceBusy) return;
+    this.clearLocationChoices();
+    this.updateData({ notice: "已取消地点选择，原建议保留。", error: "" });
+  },
+  async loadLocationChoices(origin: ChoiceOrigin) {
+    const state = this.runtime;
+    const epoch = state.choiceEpoch;
+    const isCurrent = () =>
+      !state.unloaded &&
+      this.runtime === state &&
+      state.choiceEpoch === epoch &&
+      state.locationGeneration === origin.generation &&
+      client.userId === origin.owner &&
+      this.data.recommendation?.targetLifeObjectId === origin.target;
+    this.updateData({ routeStatus: "正在查找可能的地点…" });
+    const key = await client.newKey();
+    if (!isCurrent()) return false;
+    const result = await client.request("/v1/locations/choices", locationChoicesResponseSchema, {
+      method: "POST",
+      key,
+      data: locationChoicesRequestSchema.parse({
+        lifeObjectId: origin.target,
+      }),
+    });
+    if (!isCurrent() || result.lifeObjectId !== origin.target) return false;
+    if (!result.choices.length) {
+      this.updateData({
+        error: routeUnavailableMessage(result.reason ?? "DESTINATION_UNRESOLVED"),
+      });
+      return true;
+    }
+    state.choiceContext = {
+      ...origin,
+      choices: result.choices,
+      choiceExpiresAt: Date.parse(result.expiresAt),
+      pending: null,
+    };
+    const context = state.choiceContext;
+    state.choiceOriginTimer = setTimeout(
+      () => {
+        if (state.choiceContext === context) context.location = null;
+        state.choiceOriginTimer = undefined;
+      },
+      Math.max(0, origin.expiresAt - Date.now()),
+    );
+    this.updateData({
+      locationChoices: result.choices.map(({ token: _token, ...choice }, index) => ({
+        ...choice,
+        choiceKey: `${choice.city}:${index}`,
+      })),
+      error: "",
+      notice: "",
+    });
+    return true;
+  },
+  async selectLocationChoice(event: WechatMiniprogram.TouchEvent) {
+    const state = this.runtime;
+    const context = state.choiceContext;
+    const epoch = state.choiceEpoch;
+    const index = Number(event.currentTarget.dataset.index);
+    if (!context || this.data.busy || !Number.isInteger(index) || !context.choices[index]) return;
+    const isCurrent = () =>
+      !state.unloaded &&
+      this.runtime === state &&
+      state.choiceEpoch === epoch &&
+      state.choiceContext === context &&
+      state.locationGeneration === context.generation &&
+      client.userId === context.owner &&
+      this.data.recommendation?.targetLifeObjectId === context.target;
+    if (!isCurrent()) return;
+    if (context.choiceExpiresAt <= Date.now()) {
+      this.clearLocationChoices();
+      this.updateData({ error: "地点选项已过期，请重新核对地点后再选。", canVerifyRoute: true });
+      return;
+    }
+    if (context.pending && context.pending.index !== index) {
+      this.updateData({ error: "上次选择尚未确认，请先重试原来的地点。" });
+      return;
+    }
+    this.updateData({ locationChoiceBusy: true, busy: true, error: "", notice: "" });
+    try {
+      const data = locationSelectRequestSchema.parse({
+        lifeObjectId: context.target,
+        choiceToken: context.choices[index]!.token,
+      });
+      if (!context.pending)
+        context.pending = { index, signature: JSON.stringify(data), key: await client.newKey() };
+      if (!isCurrent()) return;
+      const result = await client.request("/v1/locations/select", locationSelectResponseSchema, {
+        method: "POST",
+        key: context.pending.key,
+        data,
+      });
+      if (!isCurrent() || result.lifeObjectId !== context.target) return;
+      routeCache.remove(context.owner, context.target);
+      state.nowPending = state.answerPending = state.feedbackPending = null;
+      this.clearLocationChoices();
+      this.updateData({ routeView: null, departureReason: "", canVerifyRoute: true });
+      // A fresh Now request must use the selected object's new version.
+      await this.runRouteVerification(context);
+    } catch (error) {
+      if (!isCurrent()) return;
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (
+        ["LOCATION_CHOICES_EXPIRED", "LOCATION_CHOICE_INVALID", "LOCATION_OBJECT_CHANGED"].includes(
+          code,
+        )
+      )
+        this.clearLocationChoices();
+      this.updateData({ error: locationChoiceMessage(error), canVerifyRoute: true });
+    } finally {
+      if (isCurrent()) this.updateData({ locationChoiceBusy: false, busy: false });
+    }
+  },
+  async runRouteVerification(reuse?: ChoiceOrigin) {
     const state = this.runtime;
     if (
       state.unloaded ||
@@ -1154,11 +1324,24 @@ Page({
       this.data.recommendation?.progress?.state === "ACTIVE"
     )
       return;
-    const generation = ++state.locationGeneration;
     const owner = client.userId;
     const focusObjectId = this.data.recommendation?.targetLifeObjectId;
+    if (!owner || !focusObjectId) return;
+    const reusedLocation =
+      reuse &&
+      reuse.owner === owner &&
+      reuse.target === focusObjectId &&
+      reuse.generation === state.locationGeneration &&
+      reuse.expiresAt > Date.now()
+        ? reuse.location
+        : null;
+    const generation = ++state.locationGeneration;
     const isCurrent = () =>
-      !state.unloaded && state.locationGeneration === generation && client.userId === owner;
+      !state.unloaded &&
+      this.runtime === state &&
+      state.locationGeneration === generation &&
+      client.userId === owner &&
+      this.data.recommendation?.targetLifeObjectId === focusObjectId;
     this.updateData({
       routeLocationBusy: true,
       busy: true,
@@ -1167,23 +1350,26 @@ Page({
       notice: "",
     });
     try {
-      let point: WechatMiniprogram.GetLocationSuccessCallbackResult;
-      try {
-        point = await getCurrentLocation();
-      } catch (error) {
-        if (isCurrent()) this.updateData({ error: userMessage(error) });
-        return;
+      if (reusedLocation) state.requestLocation = reusedLocation;
+      else {
+        let point: WechatMiniprogram.GetLocationSuccessCallbackResult;
+        try {
+          point = await getCurrentLocation();
+        } catch (error) {
+          if (isCurrent()) this.updateData({ error: userMessage(error) });
+          return;
+        }
+        if (!isCurrent()) return;
+        const observedAt = Date.now();
+        state.requestLocation = {
+          latitude: point.latitude,
+          longitude: point.longitude,
+          coordinateSystem: "GCJ02",
+          source: "DEVICE",
+          observedAt: new Date(observedAt).toISOString(),
+          expiresAt: new Date(observedAt + 2 * 60 * 1000).toISOString(),
+        };
       }
-      if (!isCurrent()) return;
-      const observedAt = Date.now();
-      state.requestLocation = {
-        latitude: point.latitude,
-        longitude: point.longitude,
-        coordinateSystem: "GCJ02",
-        source: "DEVICE",
-        observedAt: new Date(observedAt).toISOString(),
-        expiresAt: new Date(observedAt + 2 * 60 * 60 * 1000).toISOString(),
-      };
       state.nowPending = state.answerPending = null;
       this.updateData({ routeStatus: "正在核对去程和返程…" });
       const result = await this.requestDecision(focusObjectId);
@@ -1209,7 +1395,26 @@ Page({
               : "",
           notice: routeView ? "" : `往返路线已核对。${departureMessage(result)}`,
         });
-      } else this.updateData({ error: routeUnavailableMessage(result.routeCheck?.reason) });
+      } else {
+        const reason = result.routeCheck?.reason;
+        if (
+          ["AMBIGUOUS_ADDRESS", "PROVIDER_REJECTED", "DESTINATION_UNRESOLVED"].includes(
+            reason ?? "",
+          )
+        ) {
+          if (
+            await this.loadLocationChoices({
+              owner,
+              target: focusObjectId,
+              generation,
+              expiresAt: Date.parse(state.requestLocation.expiresAt ?? ""),
+              location: state.requestLocation,
+            })
+          )
+            return;
+        }
+        if (isCurrent()) this.updateData({ error: routeUnavailableMessage(reason) });
+      }
     } catch (error) {
       if (isCurrent()) this.updateData({ error: userMessage(error) });
     } finally {

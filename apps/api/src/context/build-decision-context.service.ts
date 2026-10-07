@@ -18,6 +18,7 @@ import {
   TencentLbsAdapter,
   dominantTransitKind,
   canUseOriginCityForAddress,
+  requiresCityConfirmation,
   type GeoPoint,
   type LocationProvider,
   type RouteEstimate,
@@ -647,6 +648,27 @@ export class BuildDecisionContextService {
             if (!target.address) {
               results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
               continue;
+            }
+            // A nearby city's single match cannot rule out the same name in another city.
+            // On explicit route checks, present provider candidates before choosing an endpoint.
+            if (
+              target.id === options.compareModesForId &&
+              this.locations.searchChoices &&
+              requiresCityConfirmation(target.address, target.city)
+            ) {
+              const choices = await this.locations.searchChoices(
+                target.address,
+                target.city,
+                abort.signal,
+              );
+              if (abort.signal.aborted) break;
+              if (!choices.ok || choices.value.length) {
+                results[target.id] = {
+                  status: "UNAVAILABLE",
+                  reason: choices.ok ? "AMBIGUOUS_ADDRESS" : choices.reason,
+                };
+                continue;
+              }
             }
             let found = await this.locations.geocode(target.address, target.city, abort.signal);
             if (

@@ -135,7 +135,9 @@ export function verifiedDestinationForObject(
           reliability: location.reliability as number | undefined,
           level: location.level as number | undefined,
           poi: location.poi as GeocodedPlace["poi"],
+          selection: location.selection as GeocodedPlace["selection"],
           city: location.city as string | undefined,
+          region: location.region as string | undefined,
         },
         destination,
       )
@@ -154,6 +156,11 @@ export function verifiedDestinationData(
   result: GeocodedPlace,
   observedAt: string,
 ) {
+  if (
+    result.verificationMethod === "USER_SELECTED_POI" &&
+    !isVerifiedGeocodedPlace(result, destination)
+  )
+    throw new Error("INVALID_VERIFIED_DESTINATION");
   return {
     intent: null,
     description: destination.label,
@@ -170,12 +177,14 @@ export function verifiedDestinationData(
       ...(result.city ? { city: result.city } : {}),
       ...(result.region ? { region: result.region } : {}),
       ...(result.verificationMethod ? { verificationMethod: result.verificationMethod } : {}),
-      ...(result.verificationMethod === "POI_SEARCH"
-        ? { poi: result.poi }
-        : {
-            reliability: result.reliability,
-            level: result.level,
-          }),
+      ...(result.verificationMethod === "USER_SELECTED_POI"
+        ? { selection: result.selection }
+        : result.verificationMethod === "POI_SEARCH"
+          ? { poi: result.poi }
+          : {
+              reliability: result.reliability,
+              level: result.level,
+            }),
       observedAt,
     },
   };
