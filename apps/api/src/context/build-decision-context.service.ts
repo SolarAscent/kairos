@@ -17,6 +17,7 @@ import {
   isGeoPoint,
   TencentLbsAdapter,
   dominantTransitKind,
+  canUseOriginCityForAddress,
   type GeoPoint,
   type LocationProvider,
   type RouteEstimate,
@@ -626,6 +627,8 @@ export class BuildDecisionContextService {
     )
       return results;
     const abort = new AbortController();
+    // This city is a request-local search hint, never the destination or saved home.
+    let originCity: ReturnType<NonNullable<LocationProvider["cityForLocation"]>> | undefined;
     let cursor = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>((resolve) => {
@@ -645,7 +648,21 @@ export class BuildDecisionContextService {
               results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
               continue;
             }
-            const found = await this.locations.geocode(target.address, target.city, abort.signal);
+            let found = await this.locations.geocode(target.address, target.city, abort.signal);
+            if (
+              !found.ok &&
+              found.reason === "AMBIGUOUS_ADDRESS" &&
+              !abort.signal.aborted &&
+              canUseOriginCityForAddress(target.address, target.city) &&
+              this.locations.cityForLocation
+            ) {
+              originCity ??= this.locations.cityForLocation(origin, abort.signal);
+              const city = await originCity;
+              if (abort.signal.aborted) break;
+              if (city.ok)
+                found = await this.locations.geocode(target.address, city.value.city, abort.signal);
+              else found = { ok: false, reason: city.reason };
+            }
             if (!found.ok) {
               if (!abort.signal.aborted)
                 results[target.id] = { status: "UNAVAILABLE", reason: found.reason };

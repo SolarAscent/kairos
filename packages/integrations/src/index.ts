@@ -135,11 +135,15 @@ export type MapFailure =
   | "PROVIDER_REJECTED"
   | "RATE_LIMITED"
   | "QUOTA_EXCEEDED"
+  | "ROUTE_TOO_CLOSE"
+  | "ROUTE_TOO_LONG"
+  | "NO_ROUTE"
   | "INVALID_RESPONSE";
 export type MapResult<T> = { ok: true; value: T } | { ok: false; reason: MapFailure };
 export interface LocationProvider {
   readonly configured: boolean;
   geocode(address: string, city?: string, signal?: AbortSignal): Promise<MapResult<GeocodedPlace>>;
+  cityForLocation?(origin: GeoPoint, signal?: AbortSignal): Promise<MapResult<{ city: string }>>;
   route(from: GeoPoint, to: GeoPoint, signal?: AbortSignal): Promise<MapResult<RouteEstimate>>;
   routeForMode?(
     from: GeoPoint,
@@ -217,6 +221,8 @@ const cityPrefixes = [
 ];
 const coarseRegions =
   /^(?:全国|中国|广东|广西|新疆|西藏|内蒙古|宁夏|河北|河南|山东|山西|陕西|四川|云南|贵州|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|湖北|湖南|甘肃|青海|海南|台湾)(?:省|自治区)?$/u;
+const administrativeRegionPrefix =
+  /^(?:全国|中国|广东|广西|新疆|西藏|内蒙古|宁夏|河北|河南|山东|山西|陕西|四川|云南|贵州|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|湖北|湖南|甘肃|青海|海南|台湾)/u;
 function identity(value: string) {
   return value.normalize("NFKC").replace(/\s/gu, "");
 }
@@ -265,6 +271,20 @@ function genericQuery(address: string) {
     /^(?:图书馆|博物馆|公园|咖啡馆|咖啡店|酒店|餐厅|饭店|超市|学校|医院|书店|电影院|地铁站|火车站|机场)$/u.test(
       identity(address),
     ) || /附近|随便|任意|最近的|一家|的(?:图书馆|博物馆|公园|酒店|餐厅)$/u.test(address)
+  );
+}
+/** A current city can scope an unqualified venue, never replace a stated destination region. */
+export function canUseOriginCityForAddress(address: string, suppliedCity?: string): boolean {
+  const value = identity(address);
+  return (
+    Boolean(value) &&
+    address.length <= 240 &&
+    !suppliedCity?.trim() &&
+    !searchScope(address) &&
+    !genericQuery(value) &&
+    !coarseRegions.test(value) &&
+    !administrativeRegionPrefix.test(value) &&
+    !/^[\p{Script=Han}]{1,20}?(?:省|自治区|特别行政区|自治州|地区|盟|市|区|县)/u.test(value)
   );
 }
 /** Validates persisted provenance as well as adapter results; POI never impersonates geocoder precision. */
@@ -392,6 +412,33 @@ export class TencentLbsAdapter implements LocationProvider {
   static fromEnvironment(env: NodeJS.ProcessEnv = process.env) {
     return new TencentLbsAdapter({ key: env.TENCENT_LBS_KEY, secret: env.TENCENT_LBS_SECRET });
   }
+  async cityForLocation(
+    origin: GeoPoint,
+    signal?: AbortSignal,
+  ): Promise<MapResult<{ city: string }>> {
+    if (!this.configured) return { ok: false, reason: "NOT_CONFIGURED" };
+    if (!isGeoPoint(origin)) return { ok: false, reason: "INVALID_LOCATION" };
+    const response = await this.request(
+      "/ws/geocoder/v1/",
+      {
+        location: `${origin.latitude},${origin.longitude}`,
+        get_poi: "0",
+        output: "json",
+      },
+      signal,
+    );
+    if (!response.ok) return response;
+    const city = record(record(response.value.result).address_component).city;
+    if (
+      typeof city !== "string" ||
+      !/^[\p{Script=Han}]{2,20}$/u.test(city.trim()) ||
+      coarseRegions.test(city.trim()) ||
+      /(?:省|自治区)$/u.test(city.trim()) ||
+      (/(?:区|县)$/u.test(city.trim()) && !/(?:地区|特别行政区)$/u.test(city.trim()))
+    )
+      return { ok: false, reason: "INVALID_RESPONSE" };
+    return { ok: true, value: { city: city.trim() } };
+  }
   async geocode(
     address: string,
     city?: string,
@@ -403,7 +450,10 @@ export class TencentLbsAdapter implements LocationProvider {
     const params: Record<string, string> = { address: address.trim(), output: "json", policy: "0" };
     if (city?.trim()) params.region = city.trim();
     const response = await this.request("/ws/geocoder/v1/", params, signal);
-    if (!response.ok) return response;
+    if (!response.ok)
+      return response.reason === "AMBIGUOUS_ADDRESS"
+        ? this.searchPoi(address.trim(), city, signal)
+        : response;
     const result = record(response.value.result),
       position = record(result.location);
     const location = { latitude: position.lat, longitude: position.lng, coordinateSystem: "GCJ02" };
@@ -686,6 +736,21 @@ export class TencentLbsAdapter implements LocationProvider {
           const body = record(JSON.parse(text));
           if (body.status === 120) return { ok: false, reason: "RATE_LIMITED" };
           if (body.status === 121) return { ok: false, reason: "QUOTA_EXCEEDED" };
+          // Missing-city geocoding can be recovered only with an exact city-scoped POI.
+          if (
+            [347, 348].includes(body.status as number) &&
+            path === "/ws/geocoder/v1/" &&
+            typeof input.address === "string"
+          )
+            return { ok: false, reason: "AMBIGUOUS_ADDRESS" };
+          if (body.status === 326) return { ok: false, reason: "ROUTE_TOO_CLOSE" };
+          if ([327, 328, 329, 335, 344, 377, 378, 379, 384].includes(body.status as number))
+            return { ok: false, reason: "NO_ROUTE" };
+          if (body.status === 373) return { ok: false, reason: "ROUTE_TOO_LONG" };
+          if (body.status === 374) return { ok: false, reason: "INVALID_LOCATION" };
+          if (body.status === 500) return { ok: false, reason: "TIMEOUT" };
+          if (typeof body.status === "number" && body.status >= 500 && body.status < 600)
+            return { ok: false, reason: "PROVIDER_UNAVAILABLE" };
           if (body.status !== 0) return { ok: false, reason: "PROVIDER_REJECTED" };
           return { ok: true, value: body };
         })(),
