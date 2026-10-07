@@ -615,11 +615,18 @@ export class TencentLbsAdapter implements LocationProvider {
   private readonly timeoutMs: number;
   private readonly rateIntervalMs: number;
   constructor(
-    options: { key?: string; secret?: string; timeoutMs?: number; rateIntervalMs?: number } = {},
+    options: {
+      key?: string;
+      secret?: string;
+      timeoutMs?: number;
+      rateIntervalMs?: number;
+      onProviderStatus?: (event: { operation: string; status: number }) => void;
+    } = {},
     private readonly transport: typeof fetch = fetch,
   ) {
     this.key = options.key?.trim() ?? "";
     this.secret = options.secret?.trim() ?? "";
+    this.onProviderStatus = options.onProviderStatus;
     this.configured = Boolean(this.key);
     this.timeoutMs = Math.max(10, Math.min(options.timeoutMs ?? 900, 2000));
     // Real transport defaults to four starts per second per key/path in this process.
@@ -630,6 +637,7 @@ export class TencentLbsAdapter implements LocationProvider {
         : Math.max(250, options.rateIntervalMs ?? (transport === fetch ? 250 : 0));
     if (options.rateIntervalMs == null && transport !== fetch) this.rateIntervalMs = 0;
   }
+  private readonly onProviderStatus?: (event: { operation: string; status: number }) => void;
   private async waitForTurn(path: string, signal: AbortSignal) {
     if (!this.rateIntervalMs || signal.aborted) return;
     const key = createHash("sha256")
@@ -660,7 +668,12 @@ export class TencentLbsAdapter implements LocationProvider {
     await turn;
   }
   static fromEnvironment(env: NodeJS.ProcessEnv = process.env) {
-    return new TencentLbsAdapter({ key: env.TENCENT_LBS_KEY, secret: env.TENCENT_LBS_SECRET });
+    return new TencentLbsAdapter({
+      key: env.TENCENT_LBS_KEY,
+      secret: env.TENCENT_LBS_SECRET,
+      onProviderStatus: (event) =>
+        console.warn(JSON.stringify({ event: "TENCENT_MAP_REJECTION", ...event })),
+    });
   }
   async cityForLocation(
     origin: GeoPoint,
@@ -1182,6 +1195,18 @@ export class TencentLbsAdapter implements LocationProvider {
           const text = await response.text();
           if (text.length > 1048576) return { ok: false, reason: "INVALID_RESPONSE" };
           const body = record(JSON.parse(text));
+          if (Number.isSafeInteger(body.status) && body.status !== 0) {
+            // A fixed endpoint label and numeric code are sufficient for diagnosis.
+            // Do not log URLs, coordinates, names, messages, keys or signatures.
+            try {
+              this.onProviderStatus?.({
+                operation: path.split("/").filter(Boolean).at(-1) ?? "unknown",
+                status: body.status as number,
+              });
+            } catch {
+              // Observability must never change route behavior.
+            }
+          }
           if (body.status === 120) return { ok: false, reason: "RATE_LIMITED" };
           if (body.status === 121) return { ok: false, reason: "QUOTA_EXCEEDED" };
           // Missing-city geocoding can be recovered only with an exact city-scoped POI.

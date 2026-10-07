@@ -16,6 +16,33 @@ const school = {
 };
 
 describe("Tencent official route status meanings", () => {
+  it("diagnoses a rejection without leaking provider messages, URLs or location", async () => {
+    const observe = vi.fn();
+    const adapter = new TencentLbsAdapter(
+      { key: "private-credential", onProviderStatus: observe },
+      async () => response(190, { location: origin, url: "https://private" }),
+    );
+    expect(await adapter.route(origin, destination)).toEqual({
+      ok: false,
+      reason: "PROVIDER_REJECTED",
+    });
+    expect(observe.mock.calls).toEqual([[{ operation: "walking", status: 190 }]]);
+  });
+  it("keeps the provider result when diagnostics fail", async () => {
+    const adapter = new TencentLbsAdapter(
+      {
+        key: "synthetic",
+        onProviderStatus: () => {
+          throw new Error("observer failed");
+        },
+      },
+      async () => response(121),
+    );
+    expect(await adapter.route(origin, destination)).toEqual({
+      ok: false,
+      reason: "QUOTA_EXCEEDED",
+    });
+  });
   it.each([
     [326, "ROUTE_TOO_CLOSE"],
     ...[327, 328, 329, 335, 344, 377, 378, 379, 384].map((status) => [status, "NO_ROUTE"]),
