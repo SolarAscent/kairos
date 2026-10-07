@@ -13,6 +13,7 @@ import { LifeService } from "./life/life.service.js";
 import { LocationController } from "./locations/location.controller.js";
 import { PlaceLocationService } from "./locations/place-location.service.js";
 import { LocationChoiceService } from "./locations/location-choice.service.js";
+import { LocationMapSelectionService } from "./locations/location-map-selection.service.js";
 import { ContextController } from "./context/context.controller.js";
 import type { LocationProvider } from "@life/integrations";
 import {
@@ -47,6 +48,7 @@ import { HealthController } from "./health.controller.js";
     LifeService,
     PlaceLocationService,
     LocationChoiceService,
+    LocationMapSelectionService,
     NowService,
     BuildDecisionContextService,
     ActionPlanService,

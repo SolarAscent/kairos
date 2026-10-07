@@ -142,7 +142,16 @@ describe("destination provenance boundary", () => {
       originType: "EXTERNAL_VERIFIED",
       data: verifiedDestinationData(
         destination,
-        { location, reliability: 10, level: 10 },
+        {
+          location,
+          reliability: 10,
+          level: 10,
+          title: "天河公园",
+          city: "广州市",
+          region: "广东省",
+          district: "天河区",
+          verificationMethod: "GEOCODE",
+        },
         "2026-10-05T10:00:00Z",
       ),
     };

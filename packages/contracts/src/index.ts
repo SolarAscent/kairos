@@ -428,6 +428,9 @@ export const routeCheckDetailSchema = z.object({
   origin: routePointSchema,
   destination: routePointSchema,
   destinationLabel: z.string().min(1).max(240),
+  destinationAddress: z.string().min(1).max(512).optional(),
+  destinationSource: z.enum(["USER_SELECTED_MAP", "USER_SELECTED_POI"]).optional(),
+  destinationIdentityVerified: z.literal(false).optional(),
   outwardSeconds: z.number().nonnegative(),
   returnSeconds: z.number().nonnegative(),
   outwardMeters: z.number().nonnegative(),
@@ -502,6 +505,15 @@ export const publicCandidateSchema = z.object({
   }),
 });
 export const nowResponseSchema = z.object({
+  selectedDestination: z
+    .object({
+      lifeObjectId: uuidSchema,
+      name: z.string().min(1).max(240),
+      address: z.string().min(1).max(512),
+      source: z.enum(["USER_SELECTED_MAP", "USER_SELECTED_POI"]),
+    })
+    .nullable()
+    .optional(),
   sessionId: uuidSchema,
   focusObjectId: uuidSchema.nullable().optional(),
   routeCheck: routeCheckSchema.nullable().optional(),
@@ -697,6 +709,40 @@ export const locationSelectResponseSchema = z.object({
 });
 export type LocationChoicesRequest = z.infer<typeof locationChoicesRequestSchema>;
 export type LocationSelectRequest = z.infer<typeof locationSelectRequestSchema>;
+export const locationPickerIntentRequestSchema = z.object({ lifeObjectId: uuidSchema }).strict();
+export const locationPickerIntentResponseSchema = z.object({
+  lifeObjectId: uuidSchema,
+  intentToken: z.string().min(1).max(8192),
+  expiresAt: z.iso.datetime(),
+});
+export const locationMapSelectRequestSchema = z
+  .object({
+    lifeObjectId: uuidSchema,
+    intentToken: z.string().min(1).max(8192),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(240)
+      .regex(/^[^\u0000-\u001f\u007f]+$/u),
+    address: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .regex(/^[^\u0000-\u001f\u007f]+$/u),
+    location: z
+      .object({
+        latitude: z.number().finite().min(18).max(54),
+        longitude: z.number().finite().min(73).max(135),
+        coordinateSystem: z.literal("GCJ02"),
+      })
+      .strict(),
+  })
+  .strict();
+export const locationMapSelectResponseSchema = locationSelectResponseSchema;
+export type LocationPickerIntentRequest = z.infer<typeof locationPickerIntentRequestSchema>;
+export type LocationMapSelectRequest = z.infer<typeof locationMapSelectRequestSchema>;
 export type LocationChoice = z.infer<typeof locationChoiceSchema>;
 
 export const lifeRatingSchema = z.enum(["LIKE", "DISLIKE", "NONE"]);

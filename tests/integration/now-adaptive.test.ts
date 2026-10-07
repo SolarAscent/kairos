@@ -61,11 +61,22 @@ async function owner(seeds: Seed[]) {
         item.duration ?? (item.kind === "PLACE" ? 600 : null),
       ],
     );
-    if (item.kind === "PLACE")
-      await pool.query(
-        "UPDATE life_object_projection SET latitude=23.01,longitude=113.01,coordinate_system='GCJ02' WHERE life_object_id=$1",
-        [id],
-      );
+    if (item.kind === "PLACE") {
+      // The adaptive ranking fixture has an explicitly chosen destination; arbitrary
+      // projection coordinates must never supply this permission implicitly.
+      const intent = await request("POST", "/v1/locations/picker-intents", login.accessToken, {
+        lifeObjectId: id,
+      });
+      expect(intent.statusCode).toBe(201);
+      const selected = await request("POST", "/v1/locations/map-select", login.accessToken, {
+        lifeObjectId: id,
+        intentToken: intent.json().data.intentToken,
+        name: `候选${index + 1}`,
+        address: "广东省广州市合成测试路1号",
+        location: { latitude: 23.01, longitude: 113.01, coordinateSystem: "GCJ02" },
+      });
+      expect(selected.statusCode).toBe(201);
+    }
   }
   return { token: login.accessToken as string, userId: login.userId as string, objectIds };
 }

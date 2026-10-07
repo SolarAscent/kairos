@@ -15,26 +15,31 @@ export function departureMessage(result: NowResponse) {
     return "暂不适合出发：活动加往返所需时间超过当前可用时间。";
   }
   const messages: Record<string, string> = {
-    DURATION_UNKNOWN: "往返路线已核对。你打算在那里待多久？确认停留时间后，就能核对完整安排。",
+    DURATION_UNKNOWN:
+      "腾讯地图已计算到该位置的往返路线。你打算在那里待多久？确认停留时间后，就能核对完整安排。",
     CURRENTLY_BUSY: "暂不适合出发：已有正在进行的安排，请先完成或结束它。",
     BUDGET_LIMIT: "暂不适合出发：预计费用超过当前预算。",
-    COST_UNKNOWN: "往返路线已核对。费用尚未确认，补充预计费用后就能核对当前预算。",
+    COST_UNKNOWN:
+      "腾讯地图已计算到该位置的往返路线。费用尚未确认，补充预计费用后就能核对当前预算。",
     NOT_GOING_OUT: "暂不适合出发：你当前选择了不外出。",
     EVENT_CONFLICT: "暂不适合出发：活动与已有日程冲突。",
     LONG_TERM_GOAL: "暂不适合出发：这是一项长期目标，需要先确定本次具体行动。",
     NOT_STARTED: "暂不适合出发：活动的可用时间尚未开始。",
     UNAVAILABLE: "暂不适合出发：已有活动信息标记为当前不可用，请先核实可参与时间。",
-    BOOKING_UNCONFIRMED: "往返路线已核对。预约尚未确认，请先确认预约结果。",
-    ADMISSION_UNCONFIRMED: "往返路线已核对。入场条件尚未确认，请先核实。",
+    BOOKING_UNCONFIRMED: "腾讯地图已计算到该位置的往返路线。预约尚未确认，请先确认预约结果。",
+    ADMISSION_UNCONFIRMED: "腾讯地图已计算到该位置的往返路线。入场条件尚未确认，请先核实。",
     REGION_REQUIRES_TRAVEL: "暂不适合出发：目的地涉及跨地区出行，需要先确认交通安排。",
     ROUTE_UNVERIFIED: "暂不适合出发：本次活动的往返路线还没有核实。",
     EXPIRED: "暂不适合出发：已记录的活动时间已经结束，请先确认新的时间。",
   };
   if (blocker)
-    return messages[blocker] ?? "往返路线已核对。还有出行条件尚未确认，请先完善本次安排。";
+    return (
+      messages[blocker] ??
+      "腾讯地图已计算到该位置的往返路线。还有出行条件尚未确认，请先完善本次安排。"
+    );
   return result.recommendation?.plan?.mode === "DO"
-    ? "往返路线已核对，时间安排符合当前条件。出发前请确认开放或入场要求。"
-    : "往返路线已核对；本次建议先完成准备步骤。";
+    ? "腾讯地图已计算到该位置的往返路线，时间安排符合当前条件。出发前请确认开放或入场要求。"
+    : "腾讯地图已计算到该位置的往返路线；本次建议先完成准备步骤。";
 }
 
 export function createRouteView(check: RouteCheck | null | undefined) {
@@ -67,6 +72,13 @@ export function createRouteView(check: RouteCheck | null | undefined) {
   ];
   return {
     destinationLabel: detail.destinationLabel,
+    destinationAddress: detail.destinationAddress ?? "",
+    destinationSourceText:
+      detail.destinationSource === "USER_SELECTED_MAP"
+        ? "你在微信地图中选择的位置"
+        : detail.destinationSource === "USER_SELECTED_POI"
+          ? "你选择的腾讯地图地点"
+          : "腾讯地图返回的位置",
     latitude: detail.destination.latitude,
     longitude: detail.destination.longitude,
     points,
@@ -92,6 +104,6 @@ export function createRouteView(check: RouteCheck | null | undefined) {
       detail.selectionReason === "SCENIC_BUS_PREFERENCE"
         ? "用时相近，按你看风景的偏好，这次优先公交。"
         : "",
-    checkedAtText: `上次核对 ${checkedAt.getFullYear()}-${pad(checkedAt.getMonth() + 1)}-${pad(checkedAt.getDate())} ${pad(checkedAt.getHours())}:${pad(checkedAt.getMinutes())}`,
+    checkedAtText: `路线查询 ${checkedAt.getFullYear()}-${pad(checkedAt.getMonth() + 1)}-${pad(checkedAt.getDate())} ${pad(checkedAt.getHours())}:${pad(checkedAt.getMinutes())}`,
   };
 }

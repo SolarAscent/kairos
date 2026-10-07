@@ -22,11 +22,27 @@ let app: Awaited<ReturnType<typeof createApiApp>>,
   configured = true,
   calls = 0;
 const point = { latitude: 23.13, longitude: 113.36, coordinateSystem: "GCJ02" as const };
-const verified: MapResult<GeocodedPlace> = {
-  ok: true,
-  value: { location: point, reliability: 10, level: 10, city: "广州市", region: "广东省" },
-};
-let geocode: LocationProvider["geocode"] = async () => verified;
+function verified(address: string, city = "广州市"): MapResult<GeocodedPlace> {
+  const title = address
+    .replace(/^广东省/u, "")
+    .replace(/^广州市/u, "")
+    .replace(/^天河区/u, "");
+  return {
+    ok: true,
+    value: {
+      location: point,
+      reliability: 10,
+      level: 10,
+      verificationMethod: "GEOCODE",
+      title,
+      address: `广东省广州市天河区${title}`,
+      city,
+      region: "广东省",
+      district: "天河区",
+    },
+  };
+}
+let geocode: LocationProvider["geocode"] = async (address, city) => verified(address, city);
 const provider: LocationProvider = {
   get configured() {
     return configured;
@@ -81,7 +97,7 @@ async function seed(userId: string, name = "天河公园", kind = "PLACE", extra
         verification: "UNVERIFIED",
         facts: {
           origin: "USER_STATED",
-          evidence: `想去${name}`,
+          evidence: `想去广州市${name}`,
           place: { name, city: "广州市" },
           activityKind: "LOCAL_OUTING",
           ...extra,
@@ -118,7 +134,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   configured = true;
   calls = 0;
-  geocode = async () => verified;
+  geocode = async (address, city) => verified(address, city);
   await pool.query("DELETE FROM outbox_events");
 });
 afterAll(async () => {
@@ -138,7 +154,7 @@ describe("owned asynchronous destination enrichment", () => {
     geocode = async (address, city) => {
       expect(address).toBe("广东省广州市天河区广州图书馆");
       expect(city).toBe("广州市");
-      return verified;
+      return verified(address, city);
     };
     await refresh(user.accessToken, [id]);
     await worker.processNext();
@@ -385,10 +401,10 @@ describe("owned asynchronous destination enrichment", () => {
       started = new Promise<void>((resolve) => {
         entered = resolve;
       });
-    geocode = async () => {
+    geocode = async (address, city) => {
       entered();
       await waiting;
-      return verified;
+      return verified(address, city);
     };
     await refresh(user.accessToken, [id]);
     const processing = worker.processNext();
@@ -409,15 +425,152 @@ describe("owned asynchronous destination enrichment", () => {
       ).rows[0].outcome,
     ).toBe("OBJECT_CHANGED");
   });
+  it("does not verify a same-name venue in a district contradicting the declared address", async () => {
+    const user = await owner();
+    const id = await seed(user.userId, "广州图书馆", "PLACE", {
+      evidence: "想去广东省广州市天河区广州图书馆",
+      place: { name: "广州图书馆", city: "广州市", province: "广东省", region: "天河区" },
+    });
+    geocode = async () => ({
+      ok: true,
+      value: {
+        location: point,
+        reliability: 10,
+        level: 11,
+        verificationMethod: "GEOCODE",
+        title: "广州图书馆",
+        address: "广东省广州市越秀区广州图书馆",
+        city: "广州市",
+        region: "广东省",
+        district: "越秀区",
+      },
+    });
+    await refresh(user.accessToken, [id]);
+    await worker.processNext();
+    expect((await coordinates(id)).latitude).toBeNull();
+    const result = await pool.query(
+      "SELECT payload#>>'{result,status}' AS outcome FROM outbox_events WHERE aggregate_id=$1",
+      [id],
+    );
+    expect(result.rows[0].outcome).toBe("AMBIGUOUS_ADDRESS");
+    expect((await refresh(user.accessToken, [id])).json().data.items[0].status).toBe("NO_ADDRESS");
+    expect(calls).toBe(1);
+  });
+  it("keeps provider quota failures retryable without storing a falsely verified point", async () => {
+    const user = await owner(),
+      id = await seed(user.userId);
+    geocode = async () => ({ ok: false, reason: "QUOTA_EXCEEDED" });
+    await refresh(user.accessToken, [id]);
+    await worker.processNext();
+    expect((await coordinates(id)).latitude).toBeNull();
+    const event = await pool.query("SELECT status FROM outbox_events WHERE aggregate_id=$1", [id]);
+    expect(event.rows[0].status).toBe("RETRY");
+    expect((await refresh(user.accessToken, [id])).json().data.items[0].status).toBe("PENDING");
+    expect(
+      (
+        await pool.query(
+          "SELECT id FROM life_object_facets WHERE life_object_id=$1 AND origin_type='EXTERNAL_VERIFIED'",
+          [id],
+        )
+      ).rowCount,
+    ).toBe(0);
+    expect(calls).toBe(1);
+  });
+  it.each(["想去暨南大学", "想去暨南大学，GCJ02位置23.13,113.36"])(
+    "does not turn a model's unsupported campus locality or coordinates into grounded facts: %s",
+    async (text) => {
+      const user = await owner();
+      const capture = await request("POST", "/v1/captures", user.accessToken, {
+        type: "TEXT",
+        text,
+      });
+      expect(capture.statusCode).toBe(201);
+      const parser = new OutboxWorker(
+        pool,
+        {
+          providerName: "grounding-capture-fixture",
+          modelName: "fixture",
+          parseCapture: async () =>
+            captureParseResultSchema.parse({
+              objects: [
+                {
+                  title: "暨南大学",
+                  summary: null,
+                  kind: "PLACE",
+                  importance: 0.8,
+                  confidence: 1,
+                  uncertainFields: [],
+                  facets: [
+                    {
+                      type: "PLACE",
+                      key: "destination",
+                      confidence: 1,
+                      source: "EXTRACTED",
+                      data: {
+                        intent: "VISIT",
+                        description: "想去暨南大学",
+                        verification: "UNVERIFIED",
+                        facts: {
+                          origin: "USER_STATED",
+                          evidence: text,
+                          activityKind: "LOCAL_OUTING",
+                          place: {
+                            name: "暨南大学",
+                            city: "珠海市",
+                            region: "香洲区",
+                            province: "广东省",
+                            country: "中国",
+                            ...point,
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+              relations: [],
+              uncertainFields: [],
+              suggestedEnrichments: [],
+            }),
+        },
+        provider,
+      );
+      await parser.processNext(false);
+      const captureId = capture.json().data.captureId;
+      const stored = await pool.query(
+        `SELECT o.id, f.data FROM life_objects o
+         JOIN life_object_sources s ON s.life_object_id=o.id AND s.user_id=o.user_id
+         JOIN life_object_facets f ON f.life_object_id=o.id AND f.user_id=o.user_id
+         WHERE s.source_id=$1 AND o.user_id=$2 AND f.facet_key='destination'`,
+        [captureId, user.userId],
+      );
+      expect(stored.rows).toHaveLength(1);
+      expect(stored.rows[0].data.facts.place).toEqual({ name: "暨南大学" });
+      expect(stored.rows[0].data.normalization.warnings).toContain("PLACE_COORDINATES_UNVERIFIED");
+      expect(await coordinates(stored.rows[0].id)).toMatchObject({
+        latitude: null,
+        longitude: null,
+        coordinate_system: null,
+      });
+      const jobs = await pool.query(
+        "SELECT payload FROM outbox_events WHERE event_type='PLACE_LOCATION_ENRICH' AND aggregate_id=$1",
+        [stored.rows[0].id],
+      );
+      expect(jobs.rows).toHaveLength(1);
+      expect(jobs.rows[0].payload.address).toBe("暨南大学");
+      expect(jobs.rows[0].payload.city).toBeUndefined();
+      expect(calls).toBe(0);
+    },
+  );
   it("fences a reclaimed worker lease before writing provider coordinates", async () => {
     const user = await owner(),
       id = await seed(user.userId);
-    geocode = async () => {
+    geocode = async (address, city) => {
       await pool.query(
         "UPDATE outbox_events SET locked_by='different-worker',attempts=attempts+1 WHERE aggregate_id=$1",
         [id],
       );
-      return verified;
+      return verified(address, city);
     };
     await refresh(user.accessToken, [id]);
     await worker.processNext();
@@ -438,7 +591,7 @@ describe("owned asynchronous destination enrichment", () => {
   it("queues at most five destinations after Capture READY and reserves foreground processing", async () => {
     const user = await owner(),
       names = Array.from({ length: 6 }, (_, i) => `天河公园${i + 1}`);
-    const text = `我在广东；${names.map((name) => `想去${name}`).join("；")}`;
+    const text = `我现在在广东；${names.map((name) => `想去广州市${name}`).join("；")}`;
     const response = await request("POST", "/v1/captures", user.accessToken, {
       type: "TEXT",
       text,
@@ -470,7 +623,7 @@ describe("owned asynchronous destination enrichment", () => {
                     verification: "UNVERIFIED",
                     facts: {
                       origin: "USER_STATED",
-                      evidence: `想去${name}`,
+                      evidence: `想去广州市${name}`,
                       place: { name, city: "广州市" },
                       originContext: { region: "广东" },
                       activityKind: "LOCAL_OUTING",
@@ -504,9 +657,9 @@ describe("owned asynchronous destination enrichment", () => {
     expect(await parser.processNext(false)).toBe(false);
     expect(calls).toBe(0);
     const queried: string[] = [];
-    geocode = async (address) => {
+    geocode = async (address, city) => {
       queried.push(address);
-      return verified;
+      return verified(address, city);
     };
     expect(await parser.processNext(true)).toBe(true);
     expect(queried).toHaveLength(1);

@@ -1,4 +1,9 @@
-import { isVerifiedGeocodedPlace, type GeoPoint, type GeocodedPlace } from "./index.js";
+import {
+  isVerifiedGeocodedPlace,
+  isDomesticGeoPoint,
+  type GeoPoint,
+  type GeocodedPlace,
+} from "./index.js";
 
 export const tencentDestinationFacetKey = "tencent_destination_location";
 export interface DestinationFacet {
@@ -12,6 +17,18 @@ export interface DestinationQuery {
   city?: string;
   label: string;
 }
+export interface UserSelectedMapSelection {
+  readonly name: string;
+  readonly address: string;
+  readonly location: Readonly<GeoPoint>;
+}
+export interface UserSelectedDestination {
+  readonly location: Readonly<GeoPoint>;
+  readonly name: string;
+  readonly address: string;
+  readonly source: "USER_SELECTED_MAP" | "USER_SELECTED_POI";
+  readonly scope: "USER_CONFIRMED_INTENT";
+}
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -24,6 +41,18 @@ function text(value: unknown, maximum = 240): string | undefined {
 }
 function locality(value: string) {
   return value.replace(/\s/g, "").replace(/(?:特别行政区|自治区|省|市)$/u, "");
+}
+function selectionText(value: unknown, maximum: number) {
+  const result = text(value, maximum);
+  return result && !/[\u0000-\u001f\u007f]/u.test(result) ? result : undefined;
+}
+export function isUserSelectedMapSelection(value: unknown): value is UserSelectedMapSelection {
+  const selection = record(value);
+  return Boolean(
+    selectionText(selection.name, 240) &&
+    selectionText(selection.address, 512) &&
+    isDomesticGeoPoint(selection.location),
+  );
 }
 function query(
   address: string | undefined,
@@ -99,6 +128,130 @@ export function destinationQueryForObject(
     return undefined;
   return query(text(object.title.replace(/^(?:想去|去|到|前往)\s*/u, "")), {});
 }
+/** Fallback title is only an explicit native-selection binding, never a geocoding query. */
+export function destinationSelectionQueryForObject(
+  object: { title: string; kind: string },
+  facets: DestinationFacet[],
+): DestinationQuery | undefined {
+  const destination = destinationQueryForObject(object, facets);
+  if (destination) return destination;
+  const address = selectionText(object.title, 240);
+  return address ? { address, label: address } : undefined;
+}
+export function userSelectedDestinationData(
+  destination: DestinationQuery,
+  selection: UserSelectedMapSelection,
+  observedAt: string,
+) {
+  if (
+    !selectionText(destination.address, 240) ||
+    !selectionText(destination.label, 240) ||
+    (destination.city != null && !selectionText(destination.city, 80)) ||
+    !isUserSelectedMapSelection(selection) ||
+    !Number.isFinite(Date.parse(observedAt))
+  )
+    throw new Error("INVALID_USER_SELECTED_DESTINATION");
+  const location: GeoPoint = {
+    latitude: selection.location.latitude,
+    longitude: selection.location.longitude,
+    coordinateSystem: "GCJ02",
+  };
+  return {
+    intent: null,
+    description: destination.label,
+    verification: "USER_CONFIRMED",
+    location: {
+      source: "USER_SELECTED_MAP",
+      provider: "WECHAT_NATIVE",
+      ...location,
+      query: {
+        address: destination.address,
+        ...(destination.city ? { city: destination.city } : {}),
+      },
+      selection: {
+        name: selection.name.trim(),
+        address: selection.address.trim(),
+        location: { ...location },
+      },
+      observedAt,
+    },
+  };
+}
+export function userSelectedDestinationForObject(
+  object: { title: string; kind: string },
+  facets: DestinationFacet[],
+): UserSelectedDestination | undefined {
+  const nativeQuery = destinationSelectionQueryForObject(object, facets);
+  const strictQuery = destinationQueryForObject(object, facets);
+  for (const facet of facets) {
+    if (facet.facetKey !== tencentDestinationFacetKey) continue;
+    const location = record(facet.data.location),
+      storedQuery = record(location.query);
+    const native =
+      facet.originType === "USER_STATED" &&
+      location.source === "USER_SELECTED_MAP" &&
+      location.provider === "WECHAT_NATIVE" &&
+      facet.data.verification === "USER_CONFIRMED";
+    const destination = native ? nativeQuery : strictQuery;
+    if (
+      !destination ||
+      storedQuery.address !== destination.address ||
+      (storedQuery.city ?? "") !== (destination.city ?? "") ||
+      !isDomesticGeoPoint(location)
+    )
+      continue;
+    if (native) {
+      const selection = location.selection;
+      if (
+        typeof location.observedAt !== "string" ||
+        !Number.isFinite(Date.parse(location.observedAt)) ||
+        !isUserSelectedMapSelection(selection) ||
+        selection.location.latitude !== location.latitude ||
+        selection.location.longitude !== location.longitude
+      )
+        continue;
+      return {
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          coordinateSystem: "GCJ02",
+        },
+        name: selection.name.trim(),
+        address: selection.address.trim(),
+        source: "USER_SELECTED_MAP",
+        scope: "USER_CONFIRMED_INTENT",
+      };
+    }
+    if (
+      facet.originType !== "EXTERNAL_VERIFIED" ||
+      location.source !== "EXTERNAL_VERIFIED" ||
+      location.provider !== "TENCENT" ||
+      location.verificationMethod !== "USER_SELECTED_POI" ||
+      facet.data.verification !== "EXTERNAL_VERIFIED"
+    )
+      continue;
+    const place: GeocodedPlace = {
+      location: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        coordinateSystem: "GCJ02",
+      },
+      verificationMethod: "USER_SELECTED_POI",
+      selection: location.selection as GeocodedPlace["selection"],
+      city: location.city as string | undefined,
+      region: location.region as string | undefined,
+    };
+    if (!isVerifiedGeocodedPlace(place, destination) || !place.selection) continue;
+    return {
+      location: { ...place.location },
+      name: place.selection.title,
+      address: place.selection.address,
+      source: "USER_SELECTED_POI",
+      scope: "USER_CONFIRMED_INTENT",
+    };
+  }
+  return undefined;
+}
 
 /** Provider coordinates remain authoritative only while bound to the same declared destination. */
 export function verifiedDestinationForObject(
@@ -138,6 +291,9 @@ export function verifiedDestinationForObject(
           selection: location.selection as GeocodedPlace["selection"],
           city: location.city as string | undefined,
           region: location.region as string | undefined,
+          district: location.district as string | undefined,
+          title: location.title as string | undefined,
+          address: location.address as string | undefined,
         },
         destination,
       )
@@ -176,6 +332,9 @@ export function verifiedDestinationData(
       label: destination.label,
       ...(result.city ? { city: result.city } : {}),
       ...(result.region ? { region: result.region } : {}),
+      ...(result.district ? { district: result.district } : {}),
+      ...(result.title ? { title: result.title } : {}),
+      ...(result.address ? { address: result.address } : {}),
       ...(result.verificationMethod ? { verificationMethod: result.verificationMethod } : {}),
       ...(result.verificationMethod === "USER_SELECTED_POI"
         ? { selection: result.selection }

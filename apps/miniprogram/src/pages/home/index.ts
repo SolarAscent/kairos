@@ -1,5 +1,6 @@
 import "../../lib/zod-runtime";
 import { createStoreBindings } from "mobx-miniprogram-bindings";
+import { reaction } from "mobx-miniprogram";
 import {
   captureAcceptedSchema,
   captureListResponseSchema,
@@ -17,6 +18,10 @@ import {
   locationChoicesResponseSchema,
   locationSelectRequestSchema,
   locationSelectResponseSchema,
+  locationPickerIntentRequestSchema,
+  locationPickerIntentResponseSchema,
+  locationMapSelectRequestSchema,
+  locationMapSelectResponseSchema,
   type CaptureResponse,
   type LifeSections,
   type NowContext,
@@ -49,6 +54,40 @@ type ChoiceContext = ChoiceOrigin & {
   choiceExpiresAt: number;
   pending: (Pending & { index: number }) | null;
 };
+type PickedDestination = {
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+};
+type PickerContext = {
+  owner: string;
+  target: string;
+  intentToken: string;
+  expiresAt: number;
+  picked: PickedDestination | null;
+  pending: Pending | null;
+  nativeOpen: boolean;
+};
+function pickerMessage(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  if (/LOCATION_.*(?:EXPIRED|INVALID)/.test(code))
+    return "这次地点选择已失效，请重新打开微信地图选择。";
+  if (code === "LOCATION_OBJECT_CHANGED") return "这条心愿已更新，请重新选择地点。";
+  const message =
+    error && typeof error === "object" && "errMsg" in error
+      ? String(error.errMsg).toLowerCase()
+      : "";
+  if (/privacy|隐私/.test(message)) return "微信地图选点需要隐私授权，请同意后重新选择。";
+  if (
+    /api scope|not declared|requiredprivateinfos|not supported|接口.*(?:权限|未开通)/.test(message)
+  )
+    return "微信地图选点接口暂不可用，请检查 chooseLocation 接口开通与隐私声明。";
+  if (/auth deny|auth denied|permission|authorize.*deny|拒绝|系统.*(?:关闭|定位)/.test(message))
+    return "微信地图选点权限尚未开启，请检查微信与系统的位置权限后重新选择。";
+  if (message) return "微信地图暂时无法打开，请稍后重新选择地点。";
+  return userMessage(error);
+}
 function locationChoiceMessage(error: unknown) {
   const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
   return (
@@ -123,6 +162,10 @@ function createRuntime() {
     choiceEpoch: 0,
     choiceContext: null as ChoiceContext | null,
     choiceOriginTimer: undefined as ReturnType<typeof setTimeout> | undefined,
+    pickerEpoch: 0,
+    pickerContext: null as PickerContext | null,
+    mapRefreshGeneration: null as number | null,
+    pickerIdentityDispose: null as (() => void) | null,
     pendingDecisionCaptureId: "",
     decisionRefresh: undefined as ReturnType<typeof setTimeout> | undefined,
     feedbackPending: null as (Pending & { clientEventId: string }) | null,
@@ -191,6 +234,10 @@ function createData() {
     departureReason: "",
     locationChoices: [] as (Omit<LocationChoice, "token"> & { choiceKey: string })[],
     locationChoiceBusy: false,
+    mapPickerBusy: false,
+    mapSelection: null as Pick<PickedDestination, "name" | "address"> | null,
+    mapDestination: null as NonNullable<NowResponse["selectedDestination"]> | null,
+    hasConfirmedDestination: false,
     lifeStacks: [] as LifeStack[],
     lifeStacksLoaded: false,
     lifeStacksLoading: false,
@@ -209,13 +256,15 @@ Page({
       const cached = routeCache.get(client.userId, target);
       const sameTarget = target === this.data.recommendation?.targetLifeObjectId;
       if (!sameTarget) {
+        this.clearMapPicker();
+        this.setData({ mapDestination: null, hasConfirmedDestination: false });
         this.clearLocationChoices();
         if (this.data.routeLocationBusy) this.clearRequestLocation();
       }
       this.setData({
         ...values,
         routeView: cached?.view ?? null,
-        departureReason: cached ? `上次核对：${cached.departureReason}` : "",
+        departureReason: cached ? `上次查询：${cached.departureReason}` : "",
         canVerifyRoute:
           values.recommendation?.progress?.state !== "ACTIVE" &&
           ((values.canVerifyRoute ?? (sameTarget && this.data.canVerifyRoute)) || !!cached),
@@ -226,14 +275,39 @@ Page({
     const cached = routeCache.get(client.userId, this.data.recommendation?.targetLifeObjectId);
     this.updateData({
       routeView: cached?.view ?? null,
-      departureReason: cached ? `上次核对：${cached.departureReason}` : "",
+      departureReason: cached ? `上次查询：${cached.departureReason}` : "",
       canVerifyRoute:
         this.data.recommendation?.progress?.state !== "ACTIVE" &&
         (this.data.canVerifyRoute || !!cached),
     });
   },
+  applyNow(result: NowResponse) {
+    const selected = result.selectedDestination;
+    const target = result.recommendation?.targetLifeObjectId;
+    const mapDestination = selected && selected.lifeObjectId === target ? selected : null;
+    if (target && result.selectedDestination !== undefined) {
+      const cached = routeCache.get(client.userId, target);
+      if (
+        !mapDestination ||
+        (cached?.view.destinationAddress &&
+          cached.view.destinationAddress !== mapDestination.address)
+      )
+        routeCache.remove(client.userId ?? "", target);
+    }
+    this.updateData({
+      recommendation: result.recommendation,
+      question: result.question,
+      sessionId: result.sessionId,
+      decided: true,
+      quietReason: result.quietReason ?? "",
+      canVerifyRoute: needsRouteLocation(result),
+      mapDestination,
+      hasConfirmedDestination: !!mapDestination,
+    });
+  },
   resetSessionContent() {
     const state = this.runtime;
+    this.clearMapPicker();
     this.clearRequestLocation();
     state.lifeGeneration++;
     state.lifeStackFlight = null;
@@ -269,6 +343,8 @@ Page({
       cards: [],
       question: null,
       canVerifyRoute: false,
+      mapDestination: null,
+      hasConfirmedDestination: false,
       lifeStacks: [],
       lifeStacksLoaded: false,
       lifeStacksLoading: false,
@@ -293,6 +369,19 @@ Page({
       actions: [],
     });
     state.binding.updateStoreBindings();
+    state.pickerIdentityDispose = reaction(
+      () => sessionStore.userId,
+      () => {
+        this.clearMapPicker();
+        this.clearRequestLocation();
+        this.updateData({
+          routeView: null,
+          departureReason: "",
+          mapDestination: null,
+          hasConfirmedDestination: false,
+        });
+      },
+    );
   },
   onShow() {
     const state = this.runtime;
@@ -319,15 +408,10 @@ Page({
     try {
       const result = await client.request(`/v1/now/sessions/${sessionId}`, nowResponseSchema);
       if (this.runtime.unloaded || client.userId !== owner) return;
-      if (result.recommendation?.progress?.state === "ACTIVE")
-        this.updateData({
-          sessionId,
-          recommendation: result.recommendation,
-          decided: true,
-          question: null,
-          canVerifyRoute: false,
-        });
-      else wx.removeStorageSync(key);
+      if (result.recommendation?.progress?.state === "ACTIVE") {
+        this.applyNow(result);
+        this.updateData({ canVerifyRoute: false });
+      } else wx.removeStorageSync(key);
     } catch {
       /* Preserve the session id for retry after a transient network failure. */
     }
@@ -335,6 +419,8 @@ Page({
   onHide() {
     const state = this.runtime;
     state.visible = false;
+    if (state.pickerContext && !state.pickerContext.nativeOpen && !state.pickerContext.picked)
+      this.clearMapPicker();
     state.lifeGeneration++;
     state.lifeStackFlight = null;
     this.updateData({
@@ -344,6 +430,10 @@ Page({
       lifeStacks: this.data.lifeStacks.map((group) => ({ ...group, loading: false })),
       ...(state.deleteFlight ? { busy: false } : {}),
     });
+    if (state.mapRefreshGeneration != null) {
+      state.mapRefreshGeneration = null;
+      this.updateData({ mapPickerBusy: false, busy: false });
+    }
     this.clearRequestLocation();
     this.cleanupMedia();
     if (state.poll) clearTimeout(state.poll);
@@ -351,6 +441,9 @@ Page({
   },
   onUnload() {
     const state = this.runtime;
+    state.pickerIdentityDispose?.();
+    state.pickerIdentityDispose = null;
+    this.clearMapPicker();
     this.clearRequestLocation();
     this.cleanupMedia();
     state.unloaded = true;
@@ -1183,6 +1276,238 @@ Page({
     if (this.data.routeLocationBusy)
       this.updateData({ routeLocationBusy: false, busy: false, routeStatus: "" });
   },
+  clearMapPicker() {
+    this.runtime.pickerEpoch++;
+    this.runtime.pickerContext = null;
+    this.runtime.mapRefreshGeneration = null;
+    this.updateData({
+      mapSelection: null,
+      mapPickerBusy: false,
+      ...(this.data.mapPickerBusy ? { busy: false } : {}),
+    });
+  },
+  cancelMapSelection() {
+    if (this.data.busy) return;
+    this.clearMapPicker();
+    this.updateData({ notice: "已取消地点选择，原建议保留。", error: "" });
+  },
+  async chooseDestination() {
+    const state = this.runtime;
+    const owner = client.userId;
+    const target = this.data.recommendation?.targetLifeObjectId;
+    if (
+      state.unloaded ||
+      this.data.busy ||
+      !owner ||
+      !target ||
+      this.data.recommendation?.progress?.state === "ACTIVE"
+    )
+      return;
+    this.clearMapPicker();
+    this.clearLocationChoices();
+    const epoch = state.pickerEpoch;
+    const context: PickerContext = {
+      owner,
+      target,
+      intentToken: "",
+      expiresAt: 0,
+      picked: null,
+      pending: null,
+      nativeOpen: false,
+    };
+    state.pickerContext = context;
+    const isCurrent = () =>
+      !state.unloaded &&
+      this.runtime === state &&
+      state.pickerEpoch === epoch &&
+      state.pickerContext === context &&
+      client.userId === owner &&
+      this.data.recommendation?.targetLifeObjectId === target;
+    this.updateData({ mapPickerBusy: true, busy: true, error: "", notice: "" });
+    try {
+      const key = await client.newKey();
+      if (!isCurrent()) return;
+      const intent = await client.request(
+        "/v1/locations/picker-intents",
+        locationPickerIntentResponseSchema,
+        {
+          method: "POST",
+          key,
+          data: locationPickerIntentRequestSchema.parse({ lifeObjectId: target }),
+        },
+      );
+      if (!isCurrent()) return;
+      if (intent.lifeObjectId !== target) throw new Error("Invalid picker target");
+      context.intentToken = intent.intentToken;
+      context.expiresAt = Date.parse(intent.expiresAt);
+      if (context.expiresAt <= Date.now()) {
+        this.clearMapPicker();
+        this.updateData({ error: "这次地点选择已失效，请重新打开微信地图选择。" });
+        return;
+      }
+      if (typeof wx.chooseLocation !== "function") {
+        this.clearMapPicker();
+        this.updateData({ error: "当前微信暂不支持地图选点，请更新微信后重新选择。" });
+        return;
+      }
+      // The native picker may hide this page. Its intent is independent of GPS/choice epochs.
+      context.nativeOpen = true;
+      wx.chooseLocation({
+        success: (point) => {
+          if (!isCurrent() || context.picked) return;
+          if (context.expiresAt <= Date.now()) {
+            this.clearMapPicker();
+            this.updateData({ error: "这次地点选择已失效，请重新打开微信地图选择。" });
+            return;
+          }
+          const picked = {
+            name: typeof point.name === "string" ? point.name.trim() : "",
+            address: typeof point.address === "string" ? point.address.trim() : "",
+            latitude: point.latitude,
+            longitude: point.longitude,
+          };
+          const parsed = locationMapSelectRequestSchema.safeParse({
+            lifeObjectId: target,
+            intentToken: context.intentToken,
+            name: picked.name,
+            address: picked.address,
+            location: {
+              latitude: picked.latitude,
+              longitude: picked.longitude,
+              coordinateSystem: "GCJ02",
+            },
+          });
+          if (!parsed.success) {
+            this.clearMapPicker();
+            this.updateData({ error: "微信地图没有返回完整有效的地点信息，请重新选择。" });
+            return;
+          }
+          context.picked = picked;
+          context.nativeOpen = false;
+          this.updateData({
+            mapSelection: { name: picked.name, address: picked.address },
+            mapPickerBusy: false,
+            busy: false,
+          });
+        },
+        fail: (error) => {
+          if (!isCurrent() || context.picked) return;
+          this.clearMapPicker();
+          this.updateData(
+            /cancel|取消/i.test(error.errMsg)
+              ? { notice: "已取消地点选择，原建议保留。", error: "" }
+              : { error: pickerMessage(error) },
+          );
+        },
+      });
+    } catch (error) {
+      if (!isCurrent()) return;
+      this.clearMapPicker();
+      this.updateData({ error: pickerMessage(error) });
+    }
+  },
+  async confirmMapSelection() {
+    const state = this.runtime;
+    const context = state.pickerContext;
+    const epoch = state.pickerEpoch;
+    if (state.unloaded || this.data.busy || !context?.picked) return;
+    const isCurrent = () =>
+      !state.unloaded &&
+      this.runtime === state &&
+      state.pickerEpoch === epoch &&
+      state.pickerContext === context &&
+      client.userId === context.owner &&
+      this.data.recommendation?.targetLifeObjectId === context.target;
+    if (!isCurrent()) return;
+    if (context.expiresAt <= Date.now()) {
+      this.clearMapPicker();
+      this.updateData({ error: "这次地点选择已失效，请重新打开微信地图选择。" });
+      return;
+    }
+    this.updateData({ mapPickerBusy: true, busy: true, error: "", notice: "" });
+    try {
+      const picked = context.picked;
+      const data = locationMapSelectRequestSchema.parse({
+        lifeObjectId: context.target,
+        intentToken: context.intentToken,
+        name: picked.name,
+        address: picked.address,
+        location: {
+          latitude: picked.latitude,
+          longitude: picked.longitude,
+          coordinateSystem: "GCJ02",
+        },
+      });
+      if (!context.pending)
+        context.pending = { signature: JSON.stringify(data), key: await client.newKey() };
+      if (!isCurrent()) return;
+      // A lost receipt may still have changed the saved destination. Do not reuse its old route.
+      routeCache.remove(context.owner, context.target);
+      this.updateData({ routeView: null, departureReason: "" });
+      const result = await client.request(
+        "/v1/locations/map-select",
+        locationMapSelectResponseSchema,
+        { method: "POST", data, key: context.pending.key },
+      );
+      if (!isCurrent()) return;
+      if (result.lifeObjectId !== context.target) throw new Error("Invalid selected target");
+      this.clearRequestLocation();
+      state.answerPending = state.feedbackPending = null;
+      this.clearMapPicker();
+      this.updateData({
+        routeView: null,
+        departureReason: "",
+        mapDestination: {
+          lifeObjectId: context.target,
+          name: picked.name,
+          address: picked.address,
+          source: "USER_SELECTED_MAP",
+        },
+        hasConfirmedDestination: true,
+        question: null,
+        sessionId: "",
+        canVerifyRoute: true,
+        mapPickerBusy: true,
+        busy: true,
+      });
+      const generation = state.locationGeneration;
+      state.mapRefreshGeneration = generation;
+      const refreshCurrent = () =>
+        !state.unloaded &&
+        this.runtime === state &&
+        client.userId === context.owner &&
+        state.locationGeneration === generation &&
+        state.mapRefreshGeneration === generation &&
+        this.data.recommendation?.targetLifeObjectId === context.target;
+      try {
+        // Refresh the object version without requesting current device coordinates.
+        await this.requestDecision(context.target);
+        if (refreshCurrent())
+          this.updateData({
+            canVerifyRoute: true,
+            notice: "已保存你选择的位置。点击核对路程后，再查询当前位置与路线。",
+          });
+      } catch (error) {
+        if (refreshCurrent())
+          this.updateData({
+            canVerifyRoute: true,
+            error: `地点已保存；更新建议暂时失败。${userMessage(error)}`,
+          });
+      } finally {
+        if (refreshCurrent()) {
+          state.mapRefreshGeneration = null;
+          this.updateData({ mapPickerBusy: false, busy: false });
+        }
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (/LOCATION_.*(?:EXPIRED|INVALID|OBJECT_CHANGED)/.test(code)) this.clearMapPicker();
+      this.updateData({ error: pickerMessage(error) });
+    } finally {
+      if (isCurrent()) this.updateData({ mapPickerBusy: false, busy: false });
+    }
+  },
   async verifyCurrentRoute() {
     if (this.data.busy) return;
     this.clearLocationChoices();
@@ -1321,6 +1646,7 @@ Page({
       this.data.busy ||
       this.data.voiceStatus === "finishing" ||
       !this.data.canVerifyRoute ||
+      !this.data.hasConfirmedDestination ||
       this.data.recommendation?.progress?.state === "ACTIVE"
     )
       return;
@@ -1371,7 +1697,7 @@ Page({
         };
       }
       state.nowPending = state.answerPending = null;
-      this.updateData({ routeStatus: "正在核对去程和返程…" });
+      this.updateData({ routeStatus: "正在查询去程和返程…" });
       const result = await this.requestDecision(focusObjectId);
       if (!isCurrent() || !result) return;
       if (result.routeCheck?.status === "READY") {
@@ -1391,28 +1717,16 @@ Page({
           departureReason: freshRouteView
             ? departureMessage(result)
             : cached
-              ? `上次核对：${cached.departureReason}`
+              ? `上次查询：${cached.departureReason}`
               : "",
-          notice: routeView ? "" : `往返路线已核对。${departureMessage(result)}`,
+          notice: routeView
+            ? ""
+            : departureMessage(result).startsWith("腾讯地图")
+              ? departureMessage(result)
+              : `腾讯地图已计算到该位置的往返路线。${departureMessage(result)}`,
         });
       } else {
         const reason = result.routeCheck?.reason;
-        if (
-          ["AMBIGUOUS_ADDRESS", "PROVIDER_REJECTED", "DESTINATION_UNRESOLVED"].includes(
-            reason ?? "",
-          )
-        ) {
-          if (
-            await this.loadLocationChoices({
-              owner,
-              target: focusObjectId,
-              generation,
-              expiresAt: Date.parse(state.requestLocation.expiresAt ?? ""),
-              location: state.requestLocation,
-            })
-          )
-            return;
-        }
         if (isCurrent()) this.updateData({ error: routeUnavailableMessage(reason) });
       }
     } catch (error) {
@@ -1472,14 +1786,7 @@ Page({
       return;
     state.nowPending = null;
     state.feedbackPending = null;
-    this.updateData({
-      recommendation: result.recommendation,
-      question: result.question,
-      sessionId: result.sessionId,
-      decided: true,
-      quietReason: result.quietReason ?? "",
-      canVerifyRoute: needsRouteLocation(result),
-    });
+    this.applyNow(result);
     return result;
   },
   async answerQuestion(event: WechatMiniprogram.TouchEvent) {
@@ -1501,14 +1808,7 @@ Page({
       );
       if (state.unloaded) return;
       state.answerPending = null;
-      this.updateData({
-        recommendation: result.recommendation,
-        question: result.question,
-        sessionId: result.sessionId,
-        decided: true,
-        quietReason: result.quietReason ?? "",
-        canVerifyRoute: needsRouteLocation(result),
-      });
+      this.applyNow(result);
     } catch (error) {
       if (
         typeof error === "object" &&
@@ -1569,8 +1869,7 @@ Page({
           `/v1/now/sessions/${this.data.sessionId}`,
           nowResponseSchema,
         );
-        if (!state.unloaded && current.recommendation)
-          this.updateData({ recommendation: current.recommendation });
+        if (!state.unloaded && current.recommendation) this.applyNow(current);
         return;
       }
       if (client.userId) wx.removeStorageSync(`${client.storageKey}:active:${client.userId}`);

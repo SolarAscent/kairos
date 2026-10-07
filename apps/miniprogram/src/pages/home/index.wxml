@@ -19,7 +19,9 @@
           <view class="reason"><text>{{recommendation.reasonText}}</text></view>
           <view wx:if="{{routeView}}" class="route-preview">
             <text class="route-destination">{{routeView.destinationLabel}}</text>
-            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" polyline="{{routeView.polyline || []}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="上次核对位置、去程路线与目的地" />
+            <text wx:if="{{routeView.destinationAddress}}" class="location-choice-address">{{routeView.destinationAddress}}</text>
+            <text wx:if="{{routeView.destinationSourceText}}" class="route-privacy">{{routeView.destinationSourceText}}</text>
+            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" polyline="{{routeView.polyline || []}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="上次查询的位置、去程路线与所选目的地" />
             <text class="route-duration">{{routeView.durationText}}</text>
             <text wx:if="{{routeView.selectionText}}" class="route-status">{{routeView.selectionText}}</text>
             <text class="route-privacy">{{routeView.checkedAtText}} · 可更新路线</text>
@@ -27,23 +29,29 @@
             <button class="text-button route-open" bindtap="openRouteDestination">在微信地图中查看目的地 ›</button>
             <text class="route-privacy">路线仅保留在本次小程序会话中；退出登录后清除</text>
           </view>
-          <view wx:if="{{canVerifyRoute && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="route-check">
-            <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">{{routeLocationBusy ? '正在实时核对…' : (routeView ? '更新路线' : '用当前位置核对路程')}}</button>
+          <view wx:if="{{(canVerifyRoute || routeView || recommendation.executionType === 'NAVIGATE') && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="destination-picker">
+            <button class="secondary" bindtap="chooseDestination" loading="{{mapPickerBusy}}" disabled="{{busy}}">{{routeView || mapDestination ? '地点不对，重新选择' : '在微信地图中搜索地点'}}</button>
+            <text class="route-privacy">使用微信地图搜索与选择你想去的位置</text>
+          </view>
+          <view wx:if="{{mapSelection}}" class="location-choices">
+            <text class="location-choice-heading">确认你在微信地图选择的位置</text>
+            <text class="location-choice-title">{{mapSelection.name}}</text>
+            <text class="location-choice-address">{{mapSelection.address}}</text>
+            <text class="route-privacy">请核对具体校区和完整地址；确认后将用这个位置安排路线。</text>
+            <button class="primary" bindtap="confirmMapSelection" disabled="{{busy}}" loading="{{mapPickerBusy}}">使用这个位置</button>
+            <button class="text-button" bindtap="cancelMapSelection" disabled="{{busy}}">取消，保留原建议</button>
+          </view>
+          <view wx:if="{{mapDestination && !mapSelection}}" class="selected-destination">
+            <text class="route-privacy">{{mapDestination.source === 'USER_SELECTED_MAP' ? '你在微信地图选择的位置' : '你选择的地图地点'}}</text>
+            <text class="location-choice-title">{{mapDestination.name}}</text>
+            <text class="location-choice-address">{{mapDestination.address}}</text>
+          </view>
+          <view wx:if="{{canVerifyRoute && hasConfirmedDestination && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="route-check">
+            <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">{{routeLocationBusy ? '正在查询路线…' : (routeView ? '更新路线' : '用当前位置核对路程')}}</button>
             <text wx:if="{{routeStatus}}" class="route-status">{{routeStatus}}</text>
             <text class="route-privacy">位置仅用于本次建议与腾讯地图路线查询</text>
           </view>
           <text wx:if="{{departureReason && !routeView}}" class="route-blocker">{{departureReason}}</text>
-          <view wx:if="{{locationChoices.length}}" class="location-choices">
-            <text class="location-choice-heading">{{locationChoices.length > 1 ? '你想去的是哪个地点？' : '确认一下这个地点'}}</text>
-            <text class="route-privacy">请核对城市和完整地址，确认后再安排路线。</text>
-            <button wx:for="{{locationChoices}}" wx:key="choiceKey" class="location-choice" data-index="{{index}}" bindtap="selectLocationChoice" disabled="{{busy}}">
-              <text class="location-choice-city">{{item.city}}{{item.district ? ' · ' + item.district : ''}}</text>
-              <text class="location-choice-title">{{item.title}}</text>
-              <text class="location-choice-address">{{item.address}}</text>
-            </button>
-            <text wx:if="{{locationChoiceBusy}}" class="route-status">正在确认地点…</text>
-            <button class="text-button" bindtap="cancelLocationChoices" disabled="{{locationChoiceBusy}}">取消，保留原建议</button>
-          </view>
           <view class="action-row">
             <button wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}" class="primary" data-type="COMPLETE" bindtap="feedback" disabled="{{busy}}">完成这一步</button>
             <button wx:else class="primary" data-type="ACCEPT" bindtap="feedback" disabled="{{busy}}" loading="{{busy}}">就做这个</button>

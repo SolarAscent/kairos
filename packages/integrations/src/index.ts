@@ -4,8 +4,17 @@ export {
   verifiedDestinationForObject,
   verifiedDestinationData,
   tencentDestinationFacetKey,
+  destinationSelectionQueryForObject,
+  userSelectedDestinationData,
+  userSelectedDestinationForObject,
+  isUserSelectedMapSelection,
 } from "./destination.js";
-export type { DestinationFacet, DestinationQuery } from "./destination.js";
+export type {
+  DestinationFacet,
+  DestinationQuery,
+  UserSelectedMapSelection,
+  UserSelectedDestination,
+} from "./destination.js";
 
 export interface GeoPoint {
   latitude: number;
@@ -16,6 +25,9 @@ export interface GeocodedPlace {
   location: GeoPoint;
   city?: string;
   region?: string;
+  district?: string;
+  title?: string;
+  address?: string;
   reliability?: number;
   level?: number;
   verificationMethod?: "GEOCODE" | "POI_SEARCH" | "USER_SELECTED_POI";
@@ -181,6 +193,16 @@ export function isGeoPoint(value: unknown): value is GeoPoint {
     typeof point.longitude === "number" &&
     Number.isFinite(point.longitude) &&
     Math.abs(point.longitude) <= 180
+  );
+}
+/** Domestic map coverage bounds; this is a coordinate guard, not administrative/address proof. */
+export function isDomesticGeoPoint(value: unknown): value is GeoPoint {
+  return (
+    isGeoPoint(value) &&
+    value.latitude >= 18 &&
+    value.latitude <= 54 &&
+    value.longitude >= 73 &&
+    value.longitude <= 135
   );
 }
 function record(value: unknown): Record<string, unknown> {
@@ -430,7 +452,7 @@ export function isVerifiedGeocodedPlace(
   value: GeocodedPlace,
   query?: { address: string; city?: string },
 ): boolean {
-  if (!isGeoPoint(value.location)) return false;
+  if (!isDomesticGeoPoint(value.location)) return false;
   if (value.verificationMethod === "USER_SELECTED_POI") {
     const selection = value.selection;
     const match = query && selection ? choiceMatch(selection, query) : undefined;
@@ -454,7 +476,8 @@ export function isVerifiedGeocodedPlace(
       nonnegative(value.reliability) &&
       value.reliability >= 7 &&
       nonnegative(value.level) &&
-      value.level >= 9
+      value.level >= 9 &&
+      Boolean(query && matchesGeocodeEvidence(value, query))
     );
   const poi = value.poi;
   if (
@@ -496,6 +519,74 @@ export function isVerifiedGeocodedPlace(
     (!scope.district || scope.district === poi.district) &&
     !genericQuery(poi.query) &&
     poi.match === poiMatch(poi.query, poi.title, poi.address, scope),
+  );
+}
+function matchesGeocodeEvidence(
+  value: GeocodedPlace,
+  query: { address: string; city?: string },
+): boolean {
+  if (
+    typeof query.address !== "string" ||
+    !query.address.trim() ||
+    query.address.length > 240 ||
+    (query.city != null &&
+      (typeof query.city !== "string" || !query.city.trim() || query.city.length > 80)) ||
+    typeof value.city !== "string" ||
+    !/^[\p{Script=Han}]{2,20}$/u.test(value.city) ||
+    coarseRegions.test(value.city) ||
+    typeof value.region !== "string" ||
+    !/^[\p{Script=Han}]{2,30}$/u.test(value.region) ||
+    typeof value.title !== "string" ||
+    !value.title.trim() ||
+    value.title.length > 240 ||
+    (value.district != null &&
+      (typeof value.district !== "string" || !/^[\p{Script=Han}]{0,30}$/u.test(value.district))) ||
+    (value.address != null && (typeof value.address !== "string" || value.address.length > 500))
+  )
+    return false;
+  const scope = searchScope(query.address, query.city);
+  if (coarseRegions.test(identity(query.address)) || (scope && sameCity(query.address, scope.city)))
+    return false;
+  if (query.city?.trim() && !scope) return false;
+  if (
+    scope &&
+    (!sameCity(scope.city, value.city) ||
+      (scope.province && identity(scope.province) !== identity(value.region)) ||
+      (scope.district && scope.district !== value.district))
+  )
+    return false;
+  const province = identity(query.address).match(
+    /^(?:中国)?([\p{Script=Han}]{2,6}?(?:省|自治区|特别行政区))/u,
+  )?.[1];
+  if (province && identity(province) !== identity(value.region)) return false;
+  const shortProvince = identity(query.address).match(administrativeRegionPrefix)?.[0];
+  if (
+    shortProvince &&
+    !["中国", "全国"].includes(shortProvince) &&
+    !identity(value.region).startsWith(shortProvince)
+  )
+    return false;
+  let localPart = identity(query.address).replace(/^中国/u, "");
+  if (province && localPart.startsWith(province)) localPart = localPart.slice(province.length);
+  else if (
+    shortProvince &&
+    !["中国", "全国"].includes(shortProvince) &&
+    localPart.startsWith(shortProvince)
+  )
+    localPart = localPart.slice(shortProvince.length);
+  for (const city of [value.city, value.city.replace(/市$/u, "")])
+    if (localPart.startsWith(city)) {
+      localPart = localPart.slice(city.length);
+      break;
+    }
+  const district = localPart.match(/^([\p{Script=Han}]{1,8}?(?:区|县))/u)?.[1];
+  if (district && district !== value.district) return false;
+  return Boolean(
+    poiMatch(query.address, value.title, value.address ?? "", {
+      city: value.city,
+      province: value.region,
+      district: value.district,
+    }),
   );
 }
 
@@ -616,7 +707,7 @@ export class TencentLbsAdapter implements LocationProvider {
     const result = record(response.value.result),
       position = record(result.location);
     const location = { latitude: position.lat, longitude: position.lng, coordinateSystem: "GCJ02" };
-    if (!isGeoPoint(location)) return { ok: false, reason: "INVALID_RESPONSE" };
+    if (!isDomesticGeoPoint(location)) return { ok: false, reason: "INVALID_RESPONSE" };
     // A city/province centroid is never promoted to a precise visit destination.
     if (
       !nonnegative(result.reliability) ||
@@ -626,26 +717,30 @@ export class TencentLbsAdapter implements LocationProvider {
     )
       return this.searchPoi(address.trim(), city, signal);
     const components = record(result.address_components);
-    const declaredScope = searchScope(address, city);
-    const expectedCity = city?.trim() || declaredScope?.city;
-    if (
-      expectedCity &&
-      typeof components.city === "string" &&
-      components.city &&
-      !sameCity(expectedCity, components.city)
-    )
-      return this.searchPoi(address.trim(), city, signal);
-    return {
-      ok: true,
-      value: {
-        location,
-        reliability: result.reliability,
-        level: result.level,
-        verificationMethod: "GEOCODE",
-        ...(typeof components.city === "string" ? { city: components.city } : {}),
-        ...(typeof components.province === "string" ? { region: components.province } : {}),
-      },
+    const administrative = [
+      components.province,
+      components.city,
+      components.district,
+      components.street,
+      components.street_number,
+    ].filter((value): value is string => typeof value === "string" && Boolean(value));
+    const unique = administrative.filter(
+      (value, index) => index === 0 || value !== administrative[index - 1],
+    );
+    const value: GeocodedPlace = {
+      location,
+      reliability: result.reliability,
+      level: result.level,
+      verificationMethod: "GEOCODE",
+      ...(typeof components.city === "string" ? { city: components.city } : {}),
+      ...(typeof components.province === "string" ? { region: components.province } : {}),
+      ...(typeof components.district === "string" ? { district: components.district } : {}),
+      ...(typeof result.title === "string" ? { title: result.title } : {}),
+      ...(unique.length ? { address: unique.join("") } : {}),
     };
+    if (!isVerifiedGeocodedPlace(value, { address, city }))
+      return this.searchPoi(address.trim(), city, signal);
+    return { ok: true, value };
   }
   async searchChoices(
     address: string,

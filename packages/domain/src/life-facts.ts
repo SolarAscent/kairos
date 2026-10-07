@@ -200,6 +200,54 @@ function evidenceInSource(evidence: string, source: string): boolean {
     .filter(Boolean);
   return clauses.length > 0 && clauses.every((clause) => normalized.includes(clause));
 }
+
+type PlaceFacts = NonNullable<StructuredLifeFacts["place"]>;
+const placeFields = ["name", "city", "region", "province", "country"] as const;
+function placeAliases(field: (typeof placeFields)[number], value: string): string[] {
+  const name = evidenceText(value.normalize("NFKC"));
+  if (field === "name") return [name];
+  if (field === "country" && ["中国", "中华人民共和国", "china"].includes(name))
+    return ["中国", "中华人民共和国", "china"];
+  const provinces: Record<string, string> = {
+    广西壮族自治区: "广西",
+    宁夏回族自治区: "宁夏",
+    新疆维吾尔自治区: "新疆",
+    内蒙古自治区: "内蒙古",
+    西藏自治区: "西藏",
+  };
+  const short = provinces[name] ?? name.replace(/(?:特别行政区|自治区|省|市|区|县)$/u, "");
+  return short.length >= 2 ? [name, short] : [name];
+}
+/** A model's citation cannot establish a field it added to the cited user text. */
+function groundPlace(
+  place: PlaceFacts,
+  facts: StructuredLifeFacts,
+  source: string | undefined,
+  prefix: "PLACE" | "ORIGIN",
+  warnings: string[],
+): PlaceFacts | undefined {
+  const grounded: PlaceFacts = {};
+  const supported = source !== undefined && evidenceInSource(facts.evidence, source);
+  const sourceText = evidenceText(source?.normalize("NFKC") ?? "");
+  const citation = evidenceText(facts.evidence.normalize("NFKC"));
+  for (const field of placeFields) {
+    const value = place[field];
+    if (value === undefined) continue;
+    if (
+      supported &&
+      placeAliases(field, value).some(
+        (alias) => alias && sourceText.includes(alias) && citation.includes(alias),
+      )
+    )
+      grounded[field] = value;
+    else warnings.push(`${prefix}_${field.toUpperCase()}_NOT_GROUNDED`);
+  }
+  // Coordinates have an independent provider/user selection provenance. Never trust model numbers.
+  if (place.latitude !== undefined || place.longitude !== undefined || place.coordinateSystem)
+    warnings.push(`${prefix}_COORDINATES_UNVERIFIED`);
+  if (!supported && source === undefined) warnings.push(`${prefix}_SOURCE_UNAVAILABLE`);
+  return Object.keys(grounded).length ? grounded : undefined;
+}
 function quantityNumber(text: string): number {
   if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
   const digits: Record<string, number> = {
@@ -457,6 +505,8 @@ export type NormalizedFacet = ParsedFacet & {
       timezone: string;
       rawTime: StructuredLifeFacts["time"];
       warnings: string[];
+      unverifiedPlace?: PlaceFacts;
+      unverifiedOriginContext?: PlaceFacts;
     };
   };
 };
@@ -556,6 +606,11 @@ export function normalizeLifeFacets(
         warnings.push("CURRENT_LOCATION_NOT_GROUNDED");
       }
     }
+    const rawPlace = facts.place;
+    const rawOrigin = facts.originContext;
+    if (rawPlace) facts.place = groundPlace(rawPlace, facts, context.sourceText, "PLACE", warnings);
+    if (rawOrigin)
+      facts.originContext = groundPlace(rawOrigin, facts, context.sourceText, "ORIGIN", warnings);
     const previous = (facet.data as NormalizedFacet["data"]).normalization?.rawTime ?? facts.time;
     const source = previous ? { ...previous } : undefined;
     if (source && context.sourceText !== undefined && facts.origin === "USER_STATED") {
@@ -616,12 +671,21 @@ export function normalizeLifeFacets(
       ...facet,
       data: {
         ...facet.data,
+        ...(context.sourceText === undefined && rawPlace?.name && !facet.data.description
+          ? { description: rawPlace.name }
+          : {}),
         facts: { ...facts, ...(source ? { time } : {}) },
         normalization: {
           referenceTime: context.referenceTime,
           timezone: context.timezone,
           rawTime: source,
           warnings,
+          ...(rawPlace && warnings.some((warning) => warning.startsWith("PLACE_"))
+            ? { unverifiedPlace: rawPlace }
+            : {}),
+          ...(rawOrigin && warnings.some((warning) => warning.startsWith("ORIGIN_"))
+            ? { unverifiedOriginContext: rawOrigin }
+            : {}),
         },
       },
     };
@@ -708,17 +772,7 @@ export function buildLifeProjection(
         facet.data.facts.money &&
         facet.data.facts.money.role !== "BUDGET",
     )?.data.facts?.money;
-  const time = explicit("time")?.time,
-    placeFact = explicit("place"),
-    place = placeFact?.place;
-  const evidenceNumbers = placeFact?.evidence.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-  const coordinates =
-    place?.latitude != null &&
-    place.longitude != null &&
-    place.coordinateSystem != null &&
-    evidenceNumbers.includes(place.latitude) &&
-    evidenceNumbers.includes(place.longitude) &&
-    placeFact!.evidence.replace(/-/g, "").toUpperCase().includes(place.coordinateSystem);
+  const time = explicit("time")?.time;
   const toDate = (value: string | null | undefined) => (value ? new Date(value) : null);
   return {
     facets,
@@ -731,9 +785,9 @@ export function buildLifeProjection(
     currency: money?.role !== "BUDGET" ? (money?.currency ?? null) : null,
     durationMinSeconds: duration?.role !== "AVAILABLE" ? (duration?.minSeconds ?? null) : null,
     durationMaxSeconds: duration?.role !== "AVAILABLE" ? (duration?.maxSeconds ?? null) : null,
-    latitude: coordinates ? place!.latitude! : null,
-    longitude: coordinates ? place!.longitude! : null,
-    coordinateSystem: coordinates ? place!.coordinateSystem! : null,
+    latitude: null as number | null,
+    longitude: null as number | null,
+    coordinateSystem: null as NonNullable<PlaceFacts["coordinateSystem"]> | null,
     searchText: [
       object.title,
       object.summary,

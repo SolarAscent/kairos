@@ -162,7 +162,7 @@ describe("source-bounded life facts and calendar normalization", () => {
           originContext: { province: "广东" },
         }),
       ]),
-      context,
+      { ...context, sourceText: "我在广东，有朝一日去新疆旅行" },
     );
     expect(projected.actionFacts).toMatchObject({
       activityKind: "TRAVEL",
@@ -183,9 +183,9 @@ describe("source-bounded life facts and calendar normalization", () => {
       context,
     );
     expect(coordinates).toMatchObject({
-      latitude: 23.12,
-      longitude: 113.23,
-      coordinateSystem: "GCJ02",
+      latitude: null,
+      longitude: null,
+      coordinateSystem: null,
     });
   });
   it("grounds numeric bounds in cited units and keeps OBJECT budgets separate from CURRENT resources", () => {
@@ -215,6 +215,152 @@ describe("source-bounded life facts and calendar normalization", () => {
     expect(fabricated.facets[0]!.data.normalization!.warnings).toEqual(
       expect.arrayContaining(["DURATION_NOT_GROUNDED", "MONEY_NOT_GROUNDED"]),
     );
+  });
+  it("removes locality fields absent from the cited capture instead of inventing a campus address", () => {
+    const sourceText = "想去暨南大学";
+    const input = facet({
+      origin: "USER_STATED",
+      evidence: sourceText,
+      place: {
+        name: "暨南大学",
+        city: "珠海市",
+        region: "不存在区",
+        province: "广东省",
+        country: "中国",
+      },
+    });
+    const result = buildLifeProjection(object([input]), { ...context, sourceText });
+    expect(result.actionFacts?.place).toEqual({ name: "暨南大学" });
+    expect(result.facets[0]!.data.normalization!.warnings).toEqual(
+      expect.arrayContaining([
+        "PLACE_CITY_NOT_GROUNDED",
+        "PLACE_REGION_NOT_GROUNDED",
+        "PLACE_PROVINCE_NOT_GROUNDED",
+        "PLACE_COUNTRY_NOT_GROUNDED",
+      ]),
+    );
+    expect(input.data.facts!.place!.city).toBe("珠海市"); // Never mutate stored/model input.
+  });
+  it("requires each field in both trusted source and the actual citation, with administrative suffix compatibility", () => {
+    const sourceText = "中国广东广州天河区，想去暨南大学";
+    const full = normalizeLifeFacets(
+      [
+        facet({
+          origin: "USER_STATED",
+          evidence: sourceText,
+          place: {
+            name: "暨南大学",
+            city: "广州市",
+            region: "天河区",
+            province: "广东省",
+            country: "中华人民共和国",
+          },
+        }),
+      ],
+      { ...context, sourceText },
+    );
+    expect(full[0]!.data.facts!.place).toEqual({
+      name: "暨南大学",
+      city: "广州市",
+      region: "天河区",
+      province: "广东省",
+      country: "中华人民共和国",
+    });
+    const shortCitation = normalizeLifeFacets(
+      [
+        facet({
+          origin: "USER_STATED",
+          evidence: "想去暨南大学",
+          place: { name: "暨南大学", city: "广州市" },
+        }),
+      ],
+      { ...context, sourceText },
+    );
+    expect(shortCitation[0]!.data.facts!.place).toEqual({ name: "暨南大学" });
+    const fakeCitation = normalizeLifeFacets(
+      [
+        facet({
+          origin: "USER_STATED",
+          evidence: "广州市想去暨南大学",
+          place: { name: "暨南大学", city: "广州市" },
+        }),
+      ],
+      { ...context, sourceText: "想去暨南大学" },
+    );
+    expect(fakeCitation[0]!.data.facts).toMatchObject({ origin: "INFERRED" });
+    expect(fakeCitation[0]!.data.facts!.place).toBeUndefined();
+  });
+  it("keeps independently unverified image places as descriptions, never current context or authoritative facts", () => {
+    const result = buildLifeProjection(
+      object([
+        facet({
+          origin: "USER_STATED",
+          evidence: "中国广东省广州市天河区暨南大学 GCJ02 23.12,113.23",
+          place: {
+            name: "暨南大学",
+            city: "广州市",
+            region: "天河区",
+            latitude: 23.12,
+            longitude: 113.23,
+            coordinateSystem: "GCJ02",
+          },
+          originContext: { province: "广东省", city: "广州市" },
+        }),
+      ]),
+      context,
+    );
+    expect(result.actionFacts?.place).toBeUndefined();
+    expect(result.actionFacts?.originContext).toBeUndefined();
+    expect(result.facets[0]!.data.description).toBe("暨南大学");
+    expect(result.facets[0]!.data.normalization!.unverifiedPlace?.name).toBe("暨南大学");
+    expect(result.facets[0]!.data.normalization!.warnings).toEqual(
+      expect.arrayContaining([
+        "PLACE_SOURCE_UNAVAILABLE",
+        "PLACE_COORDINATES_UNVERIFIED",
+        "ORIGIN_SOURCE_UNAVAILABLE",
+      ]),
+    );
+    expect(result).toMatchObject({ latitude: null, longitude: null, coordinateSystem: null });
+  });
+  it("never projects model coordinates even when their numbers and coordinate label appear in real text", () => {
+    const sourceText = "去暨南大学，GCJ02位置23.12,113.23";
+    const result = buildLifeProjection(
+      object([
+        facet({
+          origin: "USER_STATED",
+          evidence: sourceText,
+          place: {
+            name: "暨南大学",
+            latitude: 23.12,
+            longitude: 113.23,
+            coordinateSystem: "GCJ02",
+          },
+        }),
+      ]),
+      { ...context, sourceText },
+    );
+    expect(result.actionFacts?.place).toEqual({ name: "暨南大学" });
+    expect(result).toMatchObject({ latitude: null, longitude: null, coordinateSystem: null });
+    expect(result.facets[0]!.data.normalization!.warnings).toContain(
+      "PLACE_COORDINATES_UNVERIFIED",
+    );
+  });
+  it("grounds the current origin's actual fields without borrowing destination locality or bypassing HOME safety", () => {
+    const sourceText = "我现在在广东，想去新疆旅行";
+    const result = normalizeLifeFacets(
+      [
+        facet({
+          origin: "USER_STATED",
+          evidence: sourceText,
+          activityKind: "HOME",
+          originContext: { province: "广东省", city: "广州市" },
+        }),
+      ],
+      { ...context, sourceText },
+    );
+    expect(result[0]!.data.facts!.originContext).toEqual({ province: "广东省" });
+    expect(result[0]!.data.facts!.activityKind).toBe("HOME");
+    expect(result[0]!.data.normalization!.warnings).toContain("ORIGIN_CITY_NOT_GROUNDED");
   });
   it("downgrades fabricated USER_STATED evidence when trusted original text disagrees", () => {
     const projected = buildLifeProjection(

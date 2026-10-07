@@ -50,7 +50,7 @@ import { DATABASE } from "../common/tokens.js";
 import { IdempotencyService } from "../common/idempotency.service.js";
 import { PreferenceReader } from "../feedback/preference-reader.js";
 import { TransportPreferenceReader } from "../feedback/transport-preference-reader.js";
-import { destinationQueryForObject } from "@life/integrations";
+import { destinationQueryForObject, userSelectedDestinationForObject } from "@life/integrations";
 
 type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const candidateFields = {
@@ -386,6 +386,9 @@ export class NowService {
         origin: route.origin,
         destination: route.destination,
         destinationLabel: row.destinationLabel ?? row.title,
+        destinationAddress: row.destinationAddress,
+        destinationSource: row.destinationSource,
+        destinationIdentityVerified: false,
         outwardSeconds: route.durationSeconds,
         returnSeconds: route.returnDurationSeconds,
         outwardMeters: route.distanceMeters,
@@ -671,9 +674,49 @@ export class NowService {
             .orderBy(desc(contextSnapshots.createdAt), desc(contextSnapshots.id))
             .limit(1)
         : [];
+    let selectedDestination = null;
+    let chosenDestination: ReturnType<typeof userSelectedDestinationForObject>;
+    if (!sourceUnavailable && typeof targetId === "string") {
+      const [object] = await tx
+        .select()
+        .from(lifeObjects)
+        .where(
+          and(
+            eq(lifeObjects.userId, userId),
+            eq(lifeObjects.id, targetId),
+            eq(lifeObjects.status, "ACTIVE"),
+            isNull(lifeObjects.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (object) {
+        const locationFacets = await tx
+          .select()
+          .from(lifeObjectFacets)
+          .where(
+            and(
+              eq(lifeObjectFacets.userId, userId),
+              eq(lifeObjectFacets.lifeObjectId, object.id),
+              isNull(lifeObjectFacets.deletedAt),
+            ),
+          )
+          .orderBy(desc(lifeObjectFacets.createdAt), desc(lifeObjectFacets.id));
+        const chosen = userSelectedDestinationForObject(object, locationFacets);
+        chosenDestination = chosen;
+        if (chosen)
+          selectedDestination = {
+            lifeObjectId: object.id,
+            name: chosen.name,
+            address: chosen.address,
+            source: chosen.source,
+          };
+      }
+    }
     const publicRouteCheck = (item: (typeof candidates)[number] | undefined): RouteCheck | null => {
       const parsed = routeCheckSchema.safeParse(item?.payload.routeCheck);
       if (!parsed.success) return null;
+      if (parsed.data.status === "READY" && item?.lifeObjectId === targetId && !chosenDestination)
+        return { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
       // Drop any legacy embedded detail, even if no valid snapshot is available.
       const base: RouteCheck = { status: parsed.data.status, reason: parsed.data.reason };
       if (
@@ -703,6 +746,12 @@ export class NowService {
       const now = Date.now();
       if (
         !detail.success ||
+        !chosenDestination ||
+        detail.data.destinationSource !== chosenDestination.source ||
+        detail.data.destinationIdentityVerified !== false ||
+        detail.data.destinationAddress !== chosenDestination.address ||
+        detail.data.destination.latitude !== chosenDestination.location.latitude ||
+        detail.data.destination.longitude !== chosenDestination.location.longitude ||
         !context.success ||
         record?.objectVersion !== item.objectVersion ||
         !record.observedAt ||
@@ -743,6 +792,7 @@ export class NowService {
     };
     return {
       sessionId,
+      selectedDestination,
       focusObjectId:
         typeof session.contextSummary.focusObjectId === "string"
           ? session.contextSummary.focusObjectId
@@ -890,6 +940,8 @@ export class NowService {
       DecisionCandidate & {
         routeCheck?: RouteCheck | null;
         destinationLabel?: string;
+        destinationAddress?: string;
+        destinationSource?: "USER_SELECTED_MAP" | "USER_SELECTED_POI";
         routeComparisonComplete?: boolean;
         routeTransitMixed?: boolean;
       }
@@ -947,7 +999,19 @@ export class NowService {
         item,
         facets.filter((facet) => attached.has(facet.objectId)),
       );
-      return { ...item, actionFacts, destinationQuery };
+      const selectedDestination = userSelectedDestinationForObject(
+        item,
+        facets.filter((facet) => facet.objectId === item.id),
+      );
+      return {
+        ...item,
+        actionFacts,
+        destinationQuery,
+        selectedDestination,
+        latitude: selectedDestination?.location.latitude ?? null,
+        longitude: selectedDestination?.location.longitude ?? null,
+        coordinateSystem: selectedDestination?.location.coordinateSystem ?? null,
+      };
     });
     // Indoor/media actions do not consume the geographic lookup budget.
     const localRanking = scoreCandidates(enriched, context);
@@ -983,6 +1047,7 @@ export class NowService {
             address: item.destinationQuery?.address,
             city: item.destinationQuery?.city,
             requiresRoute: true,
+            requiresUserSelection: true,
             activitySeconds: planningFacts(item).requiredSeconds,
             activityCostMinor: planningFacts(item).costMinMinor,
           };
@@ -995,7 +1060,10 @@ export class NowService {
         destination = result?.destination;
       return {
         ...item,
-        destinationLabel: item.destinationQuery?.label ?? item.title,
+        destinationLabel:
+          item.selectedDestination?.name ?? item.destinationQuery?.label ?? item.title,
+        destinationAddress: item.selectedDestination?.address,
+        destinationSource: item.selectedDestination?.source,
         routeComparisonComplete: route?.comparisonComplete,
         routeTransitMixed: route?.transitMixed,
         routeCheck: result

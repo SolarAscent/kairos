@@ -56,6 +56,7 @@ describe("Tencent official REST adapter", () => {
     expect((await adapter.geocode("广州某书店", "广州")).ok).toBe(false);
     fetch.mockResolvedValue(
       reply({
+        title: "某书店",
         location: { lat: 23, lng: 113 },
         reliability: 9,
         level: 10,
@@ -157,11 +158,15 @@ describe("conservative city-scoped POI fallback", () => {
     );
   });
   it("keeps reliable geocoding unchanged with no search call", async () => {
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        reply({ location: { lat: 23.11627, lng: 113.32604 }, reliability: 7, level: 11 }),
-      );
+    const fetch = vi.fn().mockResolvedValue(
+      reply({
+        title: "广州图书馆",
+        location: { lat: 23.11627, lng: 113.32604 },
+        reliability: 7,
+        level: 11,
+        address_components: { city: "广州市", province: "广东省", district: "天河区" },
+      }),
+    );
     const place = await new TencentLbsAdapter({ key: "test" }, fetch).geocode(
       "广州市天河区广州图书馆",
       "广州市",

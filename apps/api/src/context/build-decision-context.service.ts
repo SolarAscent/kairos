@@ -15,6 +15,7 @@ import type { NowContext } from "@life/contracts";
 import { normalizeLifeTime, selectRouteForWindow } from "@life/domain";
 import {
   isGeoPoint,
+  isDomesticGeoPoint,
   TencentLbsAdapter,
   dominantTransitKind,
   canUseOriginCityForAddress,
@@ -70,6 +71,7 @@ export interface LocationCandidate {
   city?: string;
   activityKind?: string;
   requiresRoute?: boolean;
+  requiresUserSelection?: boolean;
   activitySeconds?: number | null;
   activityCostMinor?: number | null;
 }
@@ -643,7 +645,11 @@ export class BuildDecisionContextService {
         const target = targets[cursor++]!;
         results[target.id] = { status: "UNAVAILABLE", reason: "TIMEOUT" };
         try {
-          let destination = isGeoPoint(target.location) ? target.location : undefined;
+          let destination = isDomesticGeoPoint(target.location) ? target.location : undefined;
+          if (target.requiresUserSelection && !destination) {
+            results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
+            continue;
+          }
           if (!destination) {
             if (!target.address) {
               results[target.id] = { status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" };
@@ -662,13 +668,15 @@ export class BuildDecisionContextService {
                 abort.signal,
               );
               if (abort.signal.aborted) break;
-              if (!choices.ok || choices.value.length) {
-                results[target.id] = {
-                  status: "UNAVAILABLE",
-                  reason: choices.ok ? "AMBIGUOUS_ADDRESS" : choices.reason,
-                };
-                continue;
-              }
+              results[target.id] = {
+                status: "UNAVAILABLE",
+                reason: !choices.ok
+                  ? choices.reason
+                  : choices.value.length
+                    ? "AMBIGUOUS_ADDRESS"
+                    : "DESTINATION_UNRESOLVED",
+              };
+              continue;
             }
             let found = await this.locations.geocode(target.address, target.city, abort.signal);
             if (

@@ -2,10 +2,10 @@
   "pages": ["pages/home/index", "pages/life-list/index"],
   "permission": {
     "scope.userLocation": {
-      "desc": "仅在主动核对路线或选择附近时使用当前位置"
+      "desc": "用于主动在地图选择地点、核对路线或查看附近"
     }
   },
-  "requiredPrivateInfos": ["getLocation"],
+  "requiredPrivateInfos": ["getLocation", "chooseLocation"],
   "window": {
     "navigationStyle": "custom",
     "backgroundColor": "#F5F7F6",

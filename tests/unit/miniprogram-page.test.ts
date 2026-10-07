@@ -686,6 +686,12 @@ describe("Home context and multimodal input interactions", () => {
   function routePreparation() {
     const target = randomUUID();
     return {
+      selectedDestination: {
+        lifeObjectId: target,
+        name: "书店",
+        address: "广州市天河区体育东路 10 号",
+        source: "USER_SELECTED_MAP",
+      },
       sessionId: randomUUID(),
       status: "RECOMMENDED",
       replayed: false,
@@ -821,13 +827,390 @@ describe("Home context and multimodal input interactions", () => {
     return { page, writes, target, response, choices, stored, locations: () => locations };
   }
   const choiceTap = (index: number) => ({ currentTarget: { dataset: { index } } });
+  // The legacy list remains callable for compatibility, but is no longer requested by the route UI.
+  async function openLegacyChoices(page: any) {
+    await page.verifyCurrentRoute();
+    await page
+      .loadLocationChoices({
+        owner: userId,
+        target: page.data.recommendation.targetLifeObjectId,
+        generation: page.runtime.locationGeneration,
+        expiresAt: Date.now() + 120000,
+        location: {
+          latitude: 23.1,
+          longitude: 113.2,
+          coordinateSystem: "GCJ02",
+          source: "DEVICE",
+          observedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 120000).toISOString(),
+        },
+      })
+      .catch((error: any) => {
+        if (error.code !== "SESSION_CHANGED") throw error;
+      });
+  }
+  function nativeDestination(
+    config: {
+      intentSend?: (options: any, result: any) => void;
+      mapSend?: (options: any, result: any) => void;
+    } = {},
+  ) {
+    const response = { ...routePreparation(), selectedDestination: null };
+    const target = response.recommendation.targetLifeObjectId;
+    const picked = {
+      name: "暨南大学（石牌校区）",
+      address: "广东省广州市天河区黄埔大道西 601 号",
+      latitude: 23.13001,
+      longitude: 113.35002,
+    };
+    const writes: any[] = [];
+    const stored: unknown[] = [];
+    const native: any[] = [];
+    let locations = 0;
+    let selected: any = null;
+    const page = mount(
+      (options) => {
+        if (options.method !== "POST") return success(options, []);
+        writes.push(options);
+        if (options.url.endsWith("/picker-intents")) {
+          const result = {
+            lifeObjectId: target,
+            intentToken: "runtime-only-picker-token",
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+          };
+          return config.intentSend ? config.intentSend(options, result) : success(options, result);
+        }
+        if (options.url.endsWith("/map-select")) {
+          selected = {
+            lifeObjectId: target,
+            name: options.data.name,
+            address: options.data.address,
+            source: "USER_SELECTED_MAP",
+          };
+          const result = { lifeObjectId: target, selected: true, replayed: false };
+          return config.mapSend ? config.mapSend(options, result) : success(options, result);
+        }
+        success(options, {
+          ...response,
+          selectedDestination: selected,
+          sessionId: randomUUID(),
+          ...(options.data.context.location
+            ? { routeCheck: { status: "UNAVAILABLE", reason: "AMBIGUOUS_ADDRESS" } }
+            : {}),
+        });
+      },
+      false,
+      "home",
+      {
+        chooseLocation: (options: any) => native.push(options),
+        getLocation: (options: any) => {
+          locations++;
+          options.success({ latitude: 23.1, longitude: 113.2 });
+        },
+        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+      },
+    );
+    return { page, response, target, picked, writes, native, stored, locations: () => locations };
+  }
+  it("opens native map search without GPS or preset coordinates, preserves its result over hide/show, and saves only after confirmation", async () => {
+    const { page, target, picked, writes, native, stored, locations } = nativeDestination();
+    await page.decide();
+    const oldSession = page.data.sessionId;
+    page.services.routeCache.set(userId, target, {
+      view: { longitude: 100, destinationLabel: "旧位置" },
+      departureReason: "旧路线",
+    });
+    page.updateData({ recommendation: page.data.recommendation });
+    await page.chooseDestination();
+    expect(native).toHaveLength(1);
+    expect(native[0].latitude).toBeUndefined();
+    expect(native[0].longitude).toBeUndefined();
+    expect(locations()).toBe(0);
+    expect(writes.find((item) => item.url.endsWith("/picker-intents")).data).toEqual({
+      lifeObjectId: target,
+    });
+    page.onHide();
+    page.onShow();
+    native[0].success(picked);
+    expect(page.data.mapSelection).toEqual({ name: picked.name, address: picked.address });
+    expect(page.data.routeView.destinationLabel).toBe("旧位置");
+    expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+    expect(JSON.stringify(page.data)).not.toContain("runtime-only-picker-token");
+    expect(JSON.stringify(page.data)).not.toContain("113.35002");
+    expect(JSON.stringify(page.data)).not.toContain("23.13001");
+    await page.confirmMapSelection();
+    const save = writes.find((item) => item.url.endsWith("/map-select"));
+    expect(save.data).toEqual({
+      lifeObjectId: target,
+      intentToken: "runtime-only-picker-token",
+      name: picked.name,
+      address: picked.address,
+      location: {
+        latitude: picked.latitude,
+        longitude: picked.longitude,
+        coordinateSystem: "GCJ02",
+      },
+    });
+    expect(save.header["X-Idempotency-Key"]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(page.runtime.pickerContext).toBeNull();
+    expect(page.data.mapSelection).toBeNull();
+    expect(page.data.mapDestination).toMatchObject({
+      name: picked.name,
+      address: picked.address,
+      source: "USER_SELECTED_MAP",
+    });
+    expect(page.data.notice).toContain("你选择的位置");
+    expect(page.data.notice).not.toContain("真实性已核实");
+    expect(page.data.sessionId).not.toBe(oldSession);
+    expect(page.services.routeCache.get(userId, target)).toBeNull();
+    expect(page.data.routeView).toBeNull();
+    const now = writes.filter((item) => item.url.endsWith("/now/sessions"));
+    expect(now).toHaveLength(2);
+    expect(now[1].data).toMatchObject({ focusObjectId: target, context: {} });
+    expect(now[1].header["X-Idempotency-Key"]).not.toBe(now[0].header["X-Idempotency-Key"]);
+    expect(locations()).toBe(0);
+    expect(stored).toEqual([]);
+    await page.verifyCurrentRoute();
+    expect(locations()).toBe(1);
+    expect(writes.some((item) => item.url.endsWith("/locations/choices"))).toBe(false);
+    page.onUnload();
+  });
+  it("does not save native picker cancellation or confirmation-card cancellation", async () => {
+    const { page, response, writes, native, picked, locations } = nativeDestination();
+    await page.decide();
+    await page.chooseDestination();
+    native[0].fail({ errMsg: "chooseLocation:fail cancel" });
+    expect(page.data.notice).toContain("原建议保留");
+    expect(page.data.recommendation).toEqual(response.recommendation);
+    await page.confirmMapSelection();
+    await page.chooseDestination();
+    native[1].success(picked);
+    page.cancelMapSelection();
+    await page.confirmMapSelection();
+    expect(page.runtime.pickerContext).toBeNull();
+    expect(page.data.mapSelection).toBeNull();
+    expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+    expect(locations()).toBe(0);
+    page.onUnload();
+  });
+  it("requires saved destination evidence before GPS, including when a native selection is awaiting confirmation", async () => {
+    const { page, native, picked, locations, writes } = nativeDestination();
+    await page.decide();
+    expect(page.data.canVerifyRoute).toBe(true);
+    expect(page.data.hasConfirmedDestination).toBe(false);
+    await page.verifyCurrentRoute();
+    expect(locations()).toBe(0);
+    await page.chooseDestination();
+    native[0].success(picked);
+    expect(page.data.mapSelection).not.toBeNull();
+    expect(page.data.hasConfirmedDestination).toBe(false);
+    await page.verifyCurrentRoute();
+    expect(locations()).toBe(0);
+    expect(writes.filter((item) => item.url.endsWith("/now/sessions"))).toHaveLength(1);
+    expect(readFileSync("apps/miniprogram/src/pages/home/index.wxml", "utf8")).toContain(
+      "canVerifyRoute && hasConfirmedDestination",
+    );
+    page.onUnload();
+  });
+  it("restores saved destination metadata after home recreation and queries GPS without reopening map search", async () => {
+    const { page, native, picked, locations } = nativeDestination();
+    await page.decide();
+    await page.chooseDestination();
+    native[0].success(picked);
+    await page.confirmMapSelection();
+    expect(locations()).toBe(0);
+    page.onUnload();
+    const recreated = page.createInstance();
+    recreated.onShow();
+    await recreated.decide();
+    expect(recreated.data.mapDestination).toMatchObject({
+      name: picked.name,
+      address: picked.address,
+      source: "USER_SELECTED_MAP",
+    });
+    expect(recreated.data.hasConfirmedDestination).toBe(true);
+    expect(recreated.data.mapSelection).toBeNull();
+    await recreated.verifyCurrentRoute();
+    expect(locations()).toBe(1);
+    expect(native).toHaveLength(1);
+    recreated.onUnload();
+  });
+  it("does not accept destination metadata belonging to another wish", async () => {
+    const response = routePreparation();
+    response.selectedDestination.lifeObjectId = randomUUID();
+    const page = mount((options) => success(options, response));
+    await page.decide();
+    expect(page.data.hasConfirmedDestination).toBe(false);
+    expect(page.data.mapDestination).toBeNull();
+    await page.verifyCurrentRoute();
+    expect(page.locationCalls()).toBe(0);
+    page.onUnload();
+  });
+  it("clears a cached route when fresh destination evidence is absent or its address has changed", () => {
+    const response = routePreparation();
+    const target = response.recommendation.targetLifeObjectId;
+    const page = mount(() => {});
+    page.services.routeCache.set(userId, target, {
+      view: { destinationAddress: "已经过时的地址", longitude: 100 },
+      departureReason: "旧路线",
+    });
+    page.applyNow(response);
+    expect(page.data.hasConfirmedDestination).toBe(true);
+    expect(page.data.routeView).toBeNull();
+    expect(page.services.routeCache.get(userId, target)).toBeNull();
+    page.services.routeCache.set(userId, target, {
+      view: { destinationAddress: response.selectedDestination.address, longitude: 100 },
+      departureReason: "旧路线",
+    });
+    page.applyNow({ ...response, selectedDestination: null });
+    expect(page.data.hasConfirmedDestination).toBe(false);
+    expect(page.data.routeView).toBeNull();
+    expect(page.services.routeCache.get(userId, target)).toBeNull();
+    page.onUnload();
+  });
+  it("invalidates the old route before a map-selection receipt that arrives after unload", async () => {
+    let pending: any;
+    let result: any;
+    const { page, target, native, picked, writes } = nativeDestination({
+      mapSend: (options, value) => {
+        pending = options;
+        result = value;
+      },
+    });
+    await page.decide();
+    page.services.routeCache.set(userId, target, {
+      view: { longitude: 100 },
+      departureReason: "旧路线",
+    });
+    await page.chooseDestination();
+    native[0].success(picked);
+    const saving = page.confirmMapSelection();
+    await expect.poll(() => !!pending).toBe(true);
+    expect(page.services.routeCache.get(userId, target)).toBeNull();
+    page.onUnload();
+    success(pending, result);
+    await saving;
+    expect(writes.filter((item) => item.url.endsWith("/now/sessions"))).toHaveLength(1);
+    expect(page.runtime.pickerContext).toBeNull();
+  });
+  it("invalidates the native intent even when the session identity changes away and back before its callback", async () => {
+    const { page, native, picked, writes } = nativeDestination();
+    await page.decide();
+    await page.chooseDestination();
+    page.services.sessionStore.setUser(randomUUID());
+    page.services.sessionStore.setUser(userId);
+    native[0].success(picked);
+    await page.confirmMapSelection();
+    expect(page.runtime.pickerContext).toBeNull();
+    expect(page.data.mapSelection).toBeNull();
+    expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+    page.onUnload();
+  });
+  it.each(["logout", "target", "unload"])(
+    "discards native picker results after %s",
+    async (change) => {
+      const { page, writes, native, picked } = nativeDestination();
+      await page.decide();
+      await page.chooseDestination();
+      if (change === "logout") {
+        page.services.client.clear();
+        page.onShow();
+      }
+      if (change === "target")
+        page.updateData({ recommendation: routePreparation().recommendation });
+      if (change === "unload") page.onUnload();
+      native[0].success(picked);
+      await page.confirmMapSelection();
+      expect(page.runtime.pickerContext).toBeNull();
+      expect(page.data.mapSelection).toBeNull();
+      expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+      expect(page.data.busy).toBe(false);
+      if (change !== "unload") page.onUnload();
+    },
+  );
+  it("does not open the native picker after hiding while its intent request is pending", async () => {
+    let pending: any;
+    let result: any;
+    const { page, native } = nativeDestination({
+      intentSend: (options, value) => {
+        pending = options;
+        result = value;
+      },
+    });
+    await page.decide();
+    const opening = page.chooseDestination();
+    await expect.poll(() => !!pending).toBe(true);
+    page.onHide();
+    success(pending, result);
+    await opening;
+    expect(native).toEqual([]);
+    expect(page.runtime.pickerContext).toBeNull();
+    expect(page.data.busy).toBe(false);
+    page.onUnload();
+  });
+  it("does not submit locally expired or malformed native selections", async () => {
+    const { page, native, picked, writes } = nativeDestination();
+    await page.decide();
+    await page.chooseDestination();
+    native[0].success({ ...picked, address: "", latitude: Number.NaN });
+    expect(page.data.error).toContain("完整有效");
+    await page.confirmMapSelection();
+    await page.chooseDestination();
+    native[1].success(picked);
+    page.runtime.pickerContext.expiresAt = Date.now() - 1;
+    await page.confirmMapSelection();
+    expect(page.data.error).toContain("失效");
+    expect(page.data.mapSelection).toBeNull();
+    expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+    page.onUnload();
+  });
+  it("keeps a fixed map-selection idempotency key after a lost receipt", async () => {
+    let attempts = 0;
+    const { page, writes, native, picked } = nativeDestination({
+      mapSend: (options, result) => {
+        if (++attempts === 1) options.fail({ errMsg: "offline" });
+        else success(options, { ...result, replayed: true });
+      },
+    });
+    await page.decide();
+    await page.chooseDestination();
+    native[0].success(picked);
+    await page.confirmMapSelection();
+    expect(page.data.mapSelection.name).toBe(picked.name);
+    expect(page.data.busy).toBe(false);
+    await page.confirmMapSelection();
+    const selections = writes.filter((item) => item.url.endsWith("/map-select"));
+    expect(selections).toHaveLength(2);
+    expect(selections[0].header["X-Idempotency-Key"]).toBe(
+      selections[1].header["X-Idempotency-Key"],
+    );
+    expect(selections[0].data).toEqual(selections[1].data);
+    expect(page.data.mapDestination.name).toBe(picked.name);
+    page.onUnload();
+  });
+  it.each([
+    ["chooseLocation:fail api scope is not declared requiredPrivateInfos", "接口"],
+    ["chooseLocation:fail auth deny", "权限"],
+    ["chooseLocation:fail privacy authorization required", "隐私授权"],
+  ])("explains native picker failure %s without claiming GPS failed", async (errMsg, expected) => {
+    const { page, native, writes, locations } = nativeDestination();
+    await page.decide();
+    await page.chooseDestination();
+    native[0].fail({ errMsg });
+    expect(page.data.error).toContain(expected);
+    expect(page.data.error).not.toContain("GPS");
+    expect(page.data.busy).toBe(false);
+    expect(locations()).toBe(0);
+    expect(writes.some((item) => item.url.endsWith("/map-select"))).toBe(false);
+    page.onUnload();
+  });
   it("shows the choices provider quota failure instead of the earlier ambiguous-address failure", async () => {
     const { page, writes } = destinationChoices({
       choicesSend: (options, result) =>
         success(options, { ...result, choices: [], reason: "QUOTA_EXCEEDED" }),
     });
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     expect(page.data.error).toContain("额度");
     expect(page.data.error).not.toContain("不明确");
     expect(page.data.locationChoices).toEqual([]);
@@ -840,7 +1223,7 @@ describe("Home context and multimodal input interactions", () => {
   it("shows full city choices without choosing automatically, then confirms only the tapped city and recomputes Now", async () => {
     const { page, writes, target, stored, locations } = destinationChoices();
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     expect(page.data.locationChoices).toMatchObject([
       { city: "广州市", district: "天河区", address: "体育东路 10 号" },
       { city: "上海市", district: "徐汇区", address: "漕溪北路 10 号" },
@@ -883,7 +1266,7 @@ describe("Home context and multimodal input interactions", () => {
       ],
     });
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     expect(page.data.locationChoices).toHaveLength(1);
     expect(writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
     page.cancelLocationChoices();
@@ -907,7 +1290,7 @@ describe("Home context and multimodal input interactions", () => {
         },
       });
       await page.decide();
-      const query = page.verifyCurrentRoute();
+      const query = openLegacyChoices(page);
       await expect.poll(() => !!pending).toBe(true);
       if (change === "hide") page.onHide();
       if (change === "unload") page.onUnload();
@@ -937,7 +1320,7 @@ describe("Home context and multimodal input interactions", () => {
       },
     });
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     const selecting = page.selectLocationChoice(choiceTap(1));
     await expect.poll(() => !!pending).toBe(true);
     page.onHide();
@@ -956,7 +1339,7 @@ describe("Home context and multimodal input interactions", () => {
     async (change) => {
       const { page, writes } = destinationChoices();
       await page.decide();
-      await page.verifyCurrentRoute();
+      await openLegacyChoices(page);
       expect(page.data.locationChoices).toHaveLength(2);
       if (change === "logout") {
         page.services.client.clear();
@@ -979,7 +1362,7 @@ describe("Home context and multimodal input interactions", () => {
       },
     });
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     await page.selectLocationChoice(choiceTap(1));
     expect(page.data.locationChoices).toHaveLength(2);
     await page.selectLocationChoice(choiceTap(0));
@@ -1004,7 +1387,7 @@ describe("Home context and multimodal input interactions", () => {
         options.success({ statusCode: 409, data: { error: { code, request_id: requestId } } }),
     });
     await page.decide();
-    await page.verifyCurrentRoute();
+    await openLegacyChoices(page);
     await page.selectLocationChoice(choiceTap(0));
     expect(page.data.error).toContain(message);
     expect(page.data.canVerifyRoute).toBe(true);
@@ -1017,7 +1400,7 @@ describe("Home context and multimodal input interactions", () => {
   it("never sends locally expired tokens and acquires a fresh point when the saved origin has expired", async () => {
     const first = destinationChoices();
     await first.page.decide();
-    await first.page.verifyCurrentRoute();
+    await openLegacyChoices(first.page);
     first.page.runtime.choiceContext.choiceExpiresAt = Date.now() - 1;
     await first.page.selectLocationChoice(choiceTap(0));
     expect(first.writes.some((item) => item.url.endsWith("/locations/select"))).toBe(false);
@@ -1025,7 +1408,7 @@ describe("Home context and multimodal input interactions", () => {
     first.page.onUnload();
     const second = destinationChoices();
     await second.page.decide();
-    await second.page.verifyCurrentRoute();
+    await openLegacyChoices(second.page);
     second.page.runtime.choiceContext.expiresAt = Date.now() - 1;
     await second.page.selectLocationChoice(choiceTap(0));
     expect(second.locations()).toBe(2);
@@ -1142,7 +1525,7 @@ describe("Home context and multimodal input interactions", () => {
     );
     await page.decide();
     await page.verifyCurrentRoute();
-    expect(page.data.notice).toContain("往返路线已核对");
+    expect(page.data.notice).toContain("腾讯地图已计算到该位置的往返路线");
     expect(page.data.notice).toContain("暂不适合出发");
     expect(page.data.recommendation.plan.mode).toBe("PREPARE");
     expect(page.data.error).toBe("");
@@ -1212,7 +1595,7 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.routeView.durationText).toBe("骑行约 16 分钟到达");
     expect(page.data.routeView.durationText).not.toContain("返程");
     expect(page.data.routeView.durationText).not.toContain("步行");
-    expect(page.data.routeView.checkedAtText).toContain("上次核对");
+    expect(page.data.routeView.checkedAtText).toContain("路线查询");
     expect(page.data.departureReason).toContain("你打算在那里待多久");
     expect(page.data.departureReason).not.toContain("暂不适合出发");
     expect(page.data.departureReason).not.toContain("关闭");
@@ -1324,7 +1707,7 @@ describe("Home context and multimodal input interactions", () => {
       },
       departureReason: "需要确认停留时间",
     });
-    page.updateData({ recommendation: response.recommendation });
+    page.applyNow(response);
     const cancelled = page.verifyCurrentRoute();
     expect(page.data.routeStatus).toContain("正在获取当前位置");
     expect(page.data.routeView.destinationLabel).toBe("上次的书店");
@@ -1335,7 +1718,7 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.routeView.destinationLabel).toBe("上次的书店");
     expect(page.services.routeCache.get(userId, target).view.longitude).toBe(113.4);
     page.onShow();
-    expect(page.data.departureReason).toContain("上次核对");
+    expect(page.data.departureReason).toContain("上次查询");
     const updated = page.verifyCurrentRoute();
     expect(page.data.routeView.destinationLabel).toBe("上次的书店");
     point({ latitude: 23.1, longitude: 113.2 });

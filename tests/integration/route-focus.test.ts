@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { createDatabase } from "@life/db";
-import { nowResponseSchema } from "@life/contracts";
+import {
+  locationPickerIntentResponseSchema,
+  locationMapSelectResponseSchema,
+  nowResponseSchema,
+} from "@life/contracts";
 import {
   TencentLbsAdapter,
+  verifiedDestinationData,
+  tencentDestinationFacetKey,
   type LocationProvider,
   type MapFailure,
   type GeoPoint,
@@ -23,6 +29,7 @@ const source = createDatabase(url.toString()),
   originalEnv = { ...process.env };
 const origin: GeoPoint = { latitude: 23.1, longitude: 113.3, coordinateSystem: "GCJ02" };
 const destination: GeoPoint = { latitude: 23.105, longitude: 113.305, coordinateSystem: "GCJ02" };
+const selectedAddress = "广州市天河区合成路线测试地址（仅测试）";
 let app: Awaited<ReturnType<typeof createApiApp>>,
   failure: MapFailure | undefined,
   throwRoute = false;
@@ -73,7 +80,7 @@ async function req(
 async function owner(): Promise<Owner> {
   return (await req("POST", "/v1/auth/wechat/login", "", { code: randomUUID() })).json().data;
 }
-async function seed(user: Owner, kind = "PLACE", withCity = true) {
+async function seed(user: Owner, kind = "PLACE", withCity = true, selectDestination = true) {
   const id = randomUUID(),
     title = kind === "PLACE" ? "广州市合成地点" : "合成阅读事项";
   await pool.query(
@@ -98,6 +105,26 @@ async function seed(user: Owner, kind = "PLACE", withCity = true) {
     VALUES($1,$2,$3,$4,'fixture',$5,1,'USER_STATED')`,
     [randomUUID(), user.userId, id, kind, { facts }],
   );
+  if (kind === "PLACE" && selectDestination) {
+    const intentResponse = await req("POST", "/v1/locations/picker-intents", user, {
+      lifeObjectId: id,
+    });
+    expect(intentResponse.statusCode).toBe(201);
+    const intent = locationPickerIntentResponseSchema.parse(intentResponse.json().data);
+    const selected = await req("POST", "/v1/locations/map-select", user, {
+      lifeObjectId: id,
+      intentToken: intent.intentToken,
+      name: title,
+      address: selectedAddress,
+      location: destination,
+    });
+    expect(selected.statusCode).toBe(201);
+    expect(locationMapSelectResponseSchema.parse(selected.json().data)).toEqual({
+      lifeObjectId: id,
+      selected: true,
+      replayed: false,
+    });
+  }
   return id;
 }
 function input(focusObjectId?: string, availableMinutes = 60) {
@@ -139,6 +166,51 @@ afterAll(async () => {
 });
 
 describe("targeted, bounded route checks", () => {
+  it("rejects unselected old projection and automatic geocoder evidence without a provider call, including legacy READY reads", async () => {
+    const user = await owner(),
+      target = await seed(user, "PLACE", true, false);
+    await pool.query(
+      "UPDATE life_object_projection SET latitude=$2,longitude=$3,coordinate_system='GCJ02' WHERE life_object_id=$1",
+      [target, destination.latitude, destination.longitude],
+    );
+    await pool.query(
+      `INSERT INTO life_object_facets(id,user_id,life_object_id,facet_type,facet_key,data,confidence,origin_type)
+       VALUES($1,$2,$3,'PLACE',$4,$5,1,'EXTERNAL_VERIFIED')`,
+      [
+        randomUUID(),
+        user.userId,
+        target,
+        tencentDestinationFacetKey,
+        verifiedDestinationData(
+          { address: "广州市合成地点", label: "广州市合成地点", city: "广州" },
+          { location: destination, reliability: 9, level: 10, verificationMethod: "GEOCODE" },
+          new Date().toISOString(),
+        ),
+      ],
+    );
+    const before = calls,
+      lookupBefore = addresses.length;
+    const response = await req("POST", "/v1/now/sessions", user, input(target));
+    expect(response.statusCode).toBe(201);
+    const state = nowResponseSchema.parse(response.json().data);
+    expect(state.selectedDestination).toBeNull();
+    expect(state.routeCheck).toEqual({ status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" });
+    expect(state.recommendation?.plan?.mode).toBe("PREPARE");
+    expect(calls).toBe(before);
+    expect(addresses.length).toBe(lookupBefore);
+    await pool.query(
+      "UPDATE action_candidates SET action_payload=jsonb_set(action_payload,'{routeCheck}',$2::jsonb) WHERE decision_session_id=$1",
+      [state.sessionId, JSON.stringify({ status: "READY", reason: null })],
+    );
+    const legacy = nowResponseSchema.parse(
+      (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json().data,
+    );
+    expect(legacy.routeCheck).toEqual({ status: "UNAVAILABLE", reason: "DESTINATION_UNRESOLVED" });
+    expect(legacy.candidates.every((candidate) => candidate.routeCheck?.status !== "READY")).toBe(
+      true,
+    );
+    expect(calls).toBe(before);
+  });
   it("does not let five liked indoor cards consume the route quota", async () => {
     const user = await owner(),
       place = await seed(user);
@@ -156,7 +228,7 @@ describe("targeted, bounded route checks", () => {
       reason: null,
     });
   });
-  it("keeps a focused target through idempotent replay and accepts a full destination without a separate city", async () => {
+  it("keeps a focused native selection through idempotent replay without a separate city or geocoder lookup", async () => {
     const user = await owner(),
       target = await seed(user, "PLACE", false),
       media = await seed(user, "MEDIA"),
@@ -172,6 +244,9 @@ describe("targeted, bounded route checks", () => {
     expect(state.routeCheck?.detail).toMatchObject({
       origin,
       destination,
+      destinationAddress: selectedAddress,
+      destinationSource: "USER_SELECTED_MAP",
+      destinationIdentityVerified: false,
       outwardSeconds: 120,
       returnSeconds: 120,
       outwardMeters: 100,
@@ -182,7 +257,13 @@ describe("targeted, bounded route checks", () => {
     expect(state.recommendation?.targetLifeObjectId).toBe(target);
     expect(state.recommendation?.plan?.mode).toBe("DO");
     expect(new Set(state.candidates.map((item) => item.lifeObjectId))).toEqual(new Set([target]));
-    expect(addresses.at(-1)?.city).toBeUndefined();
+    expect(state.selectedDestination).toEqual({
+      lifeObjectId: target,
+      name: "广州市合成地点",
+      address: selectedAddress,
+      source: "USER_SELECTED_MAP",
+    });
+    expect(addresses).toHaveLength(0);
     expect(calls - before).toBe(2);
     const replay = await req("POST", "/v1/now/sessions", user, body, key);
     expect(replay.json().data.sessionId).toBe(state.sessionId);
@@ -190,6 +271,9 @@ describe("targeted, bounded route checks", () => {
     expect(replay.json().data.routeCheck.detail).toMatchObject({
       origin,
       destination,
+      destinationAddress: selectedAddress,
+      destinationSource: "USER_SELECTED_MAP",
+      destinationIdentityVerified: false,
       departureBlocker: null,
     });
     expect(calls - before).toBe(2);
@@ -342,6 +426,9 @@ describe("targeted, bounded route checks", () => {
         origin,
         destination,
         destinationLabel: "广州市合成地点",
+        destinationAddress: selectedAddress,
+        destinationSource: "USER_SELECTED_MAP",
+        destinationIdentityVerified: false,
         departureBlocker: "DURATION_UNKNOWN",
         requiredSeconds: null,
       },
@@ -390,15 +477,29 @@ describe("targeted, bounded route checks", () => {
       ).toBe(true);
     }
   });
-  it("omits map detail for expired routes, changed source objects, and mismatched snapshot origins", async () => {
+  it("omits map detail for expiry, changed objects, mismatched origins and destination source/address/identity/point tampering", async () => {
     const user = await owner(),
       target = await seed(user),
       another = await owner();
-    for (const mutation of ["route", "object", "origin"] as const) {
+    for (const mutation of [
+      "route",
+      "object",
+      "origin",
+      "source",
+      "address",
+      "identity",
+      "point",
+    ] as const) {
       const state = nowResponseSchema.parse(
         (await req("POST", "/v1/now/sessions", user, input(target))).json().data,
       );
       expect(state.routeCheck?.detail?.origin).toEqual(origin);
+      expect(state.routeCheck?.detail).toMatchObject({
+        destination,
+        destinationAddress: selectedAddress,
+        destinationSource: "USER_SELECTED_MAP",
+        destinationIdentityVerified: false,
+      });
       if (mutation === "route")
         await pool.query(
           `UPDATE context_snapshots SET context=jsonb_set(context,ARRAY['verifiedRouteDetails',$2,'expiresAt'],to_jsonb('2000-01-01T00:00:00Z'::text)) WHERE decision_session_id=$1`,
@@ -413,6 +514,19 @@ describe("targeted, bounded route checks", () => {
           `UPDATE context_snapshots SET context=jsonb_set(context,'{location,latitude}','24.1'::jsonb) WHERE decision_session_id=$1`,
           [state.sessionId],
         );
+      const alteredDetail = {
+        source: { key: "destinationSource", value: "USER_SELECTED_POI" },
+        address: { key: "destinationAddress", value: "另一处未选择的地址" },
+        identity: { key: "destinationIdentityVerified", value: true },
+        point: { key: "destination", value: { ...destination, latitude: 23.2 } },
+      };
+      if (mutation in alteredDetail) {
+        const alteration = alteredDetail[mutation as keyof typeof alteredDetail];
+        await pool.query(
+          `UPDATE context_snapshots SET context=jsonb_set(context,ARRAY['verifiedRouteDetails',$2,'detail',$3],$4::jsonb) WHERE decision_session_id=$1`,
+          [state.sessionId, target, alteration.key, JSON.stringify(alteration.value)],
+        );
+      }
       expect(
         (await req("GET", `/v1/now/sessions/${state.sessionId}`, user)).json().data.routeCheck,
       ).toEqual({ status: "READY", reason: null });

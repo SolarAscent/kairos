@@ -10,7 +10,7 @@ import {
   type ParsedLifeObject,
 } from "@life/contracts";
 import { buildLifeProjection } from "@life/domain";
-import { verifiedDestinationForObject } from "@life/integrations";
+import { verifiedDestinationForObject, userSelectedDestinationForObject } from "@life/integrations";
 import { z } from "zod";
 
 type Event = { id: string; payload: unknown; created_at: Date };
@@ -240,7 +240,7 @@ export async function rebuildLifeFacts(
         },
         snapshot.context,
       );
-      const verified = verifiedDestinationForObject(
+      const selected = userSelectedDestinationForObject(
         current,
         currentFacets.map((row) => ({
           facetType: row.facet_type,
@@ -249,6 +249,17 @@ export async function rebuildLifeFacts(
           data: row.data,
         })),
       );
+      const verified =
+        selected?.location ??
+        verifiedDestinationForObject(
+          current,
+          currentFacets.map((row) => ({
+            facetType: row.facet_type,
+            facetKey: row.facet_key,
+            originType: row.origin_type,
+            data: row.data,
+          })),
+        );
       if (verified && merged.latitude == null) Object.assign(merged, verified);
       await client.query(
         `INSERT INTO life_object_projection(life_object_id,user_id,display_kind,importance_score,search_text,projection_version,next_at,expires_at,cost_min_minor,cost_max_minor,currency,duration_min_seconds,duration_max_seconds,latitude,longitude,coordinate_system)
