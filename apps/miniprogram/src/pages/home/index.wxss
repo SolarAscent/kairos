@@ -103,7 +103,7 @@
 .route-open { padding-left: 0; }
 .location-choices { margin: 24rpx 0 36rpx; padding: 28rpx; background: #E8ECE7; border-radius: 24rpx; }
 .location-choice-heading { font-size: 30rpx; font-weight: 500; line-height: 1.7; }
-.location-choice { display: block; width: 100%; margin-top: 20rpx; padding: 24rpx; text-align: left; background: #FFFFFF; border-radius: 18rpx; }
+.location-choice { display: block; width: 100% !important; margin: 20rpx 0 0 !important; padding: 24rpx; text-align: left; background: #FFFFFF; border-radius: 18rpx; white-space: normal; }
 .location-choice-city { display: block; color: #233C35; font-size: 28rpx; font-weight: 600; line-height: 1.6; }
 .location-choice-title { display: block; font-size: 27rpx; line-height: 1.7; margin-top: 8rpx; }
 .location-choice-address { display: block; color: #72827B; font-size: 24rpx; line-height: 1.8; margin-top: 6rpx; white-space: normal; }

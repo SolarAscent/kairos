@@ -41,6 +41,63 @@ const selected = (selection = choice): GeocodedPlace => ({
 const query = { address: name, label: name };
 
 describe("real Tencent POI choice lists", () => {
+  it("keeps both real Dongguan-prefixed school POIs but excludes group campuses, gates and incorrect city prefixes", async () => {
+    const rows = [
+      { ...school("original-1"), title: "东莞松山湖中心小学" },
+      {
+        ...school("original-2"),
+        title: "东莞松山湖中心小学",
+        address: "广东省东莞市松山湖新竹路2号",
+      },
+      { ...school("group-campus"), title: "东莞松山湖中心小学集团西溪学校" },
+      { ...school("west-gate"), title: "东莞松山湖中心小学-西门" },
+      { ...school("wrong-ad", "厦门市", "福建省"), title: "东莞松山湖中心小学" },
+    ];
+    const adapter = new TencentLbsAdapter({ key: "synthetic" }, async () => response(rows, 71));
+    const found = await adapter.searchChoices(name);
+    expect(found.ok && found.value.map((item) => item.id)).toEqual(["original-1", "original-2"]);
+    if (!found.ok) throw new Error("fixture failure");
+    for (const item of found.value) {
+      expect(item.title).toBe("东莞松山湖中心小学");
+      expect(item.match).toBe("EXACT_NAME");
+      expect(isVerifiedGeocodedPlace(selected(item), query)).toBe(true);
+      expect(isVerifiedGeocodedPlace(selected(item), { ...query, city: "厦门市" })).toBe(false);
+    }
+  });
+  it.each(["东莞市松山湖中心小学", "广东省东莞市松山湖中心小学"])(
+    "strips only metadata-confirmed provider title prefixes: %s",
+    async (title) => {
+      const adapter = new TencentLbsAdapter({ key: "synthetic" }, async () =>
+        response([{ ...school(), title }]),
+      );
+      expect(await adapter.searchChoices(name)).toEqual({
+        ok: true,
+        value: [{ ...choice, title }],
+      });
+    },
+  );
+  it("accepts metadata-confirmed district prefixes without stripping a venue suffix", async () => {
+    const row = {
+      ...school(),
+      title: "广东省东莞市松山湖区松山湖中心小学",
+      ad_info: { city: "东莞市", province: "广东省", district: "松山湖区" },
+    };
+    const adapter = new TencentLbsAdapter({ key: "synthetic" }, async () => response([row]));
+    expect(await adapter.searchChoices(name)).toEqual({
+      ok: true,
+      value: [{ ...choice, title: row.title, district: "松山湖区" }],
+    });
+  });
+  it("preserves a university's own city word inside a genuinely prefixed provider title", async () => {
+    const rows = [
+      { ...school("campus-1", "广州市"), title: "广州市中山大学" },
+      { ...school("campus-2", "中山市"), title: "中山市中山大学" },
+      { ...school("generic-campus", "中山市"), title: "中山市大学" },
+    ];
+    const adapter = new TencentLbsAdapter({ key: "synthetic" }, async () => response(rows));
+    const found = await adapter.searchChoices("中山大学");
+    expect(found.ok && found.value.map((item) => item.id)).toEqual(["campus-1", "campus-2"]);
+  });
   it("lists exact same-name POIs across cities without origin/nearest bias", async () => {
     const fetch = vi
       .fn()

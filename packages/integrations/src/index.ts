@@ -280,12 +280,26 @@ function poiMatch(
   if (value === identity(address)) return "EXACT_ADDRESS" as const;
   if (genericQuery(title)) return undefined;
   if (value === identity(title)) return "EXACT_NAME" as const;
-  // Strip only supplied administrative qualifiers, never fuzzy venue aliases or suffixes.
-  let qualified = value;
-  for (const qualifier of [scope.province, scope.city, scope.district])
-    if (qualifier && qualified.startsWith(identity(qualifier)))
-      qualified = qualified.slice(identity(qualifier).length);
-  return qualified !== value && qualified === identity(title) ? ("EXACT_NAME" as const) : undefined;
+  // Compare only known administrative prefixes; preserve venue names and every suffix.
+  const stripPrefixes = (name: string) => {
+    let qualified = identity(name);
+    const city = identity(scope.city).replace(/市$/u, "");
+    for (const alternatives of [[scope.province], [`${city}市`, city], [scope.district]]) {
+      const qualifier = alternatives.find(
+        (value) => value && qualified.startsWith(identity(value)),
+      );
+      if (qualifier) qualified = qualified.slice(identity(qualifier).length);
+    }
+    return qualified;
+  };
+  const qualifiedQuery = stripPrefixes(query),
+    qualifiedTitle = stripPrefixes(title);
+  if (qualifiedTitle === value) return "EXACT_NAME" as const;
+  // Keep a proper name such as 中山大学 intact rather than reducing it to a venue class.
+  if (/^(?:大学|中学|小学|学校)$/u.test(qualifiedQuery)) return undefined;
+  return qualifiedQuery && (qualifiedQuery === identity(title) || qualifiedQuery === qualifiedTitle)
+    ? ("EXACT_NAME" as const)
+    : undefined;
 }
 function genericQuery(address: string) {
   return (
@@ -359,7 +373,13 @@ function choiceMatch(choice: PoiChoice, query: { address: string; city?: string 
     coarseRegions.test(identity(query.address))
   )
     return undefined;
-  const exactTitle = identity(query.address) === identity(choice.title);
+  const exactTitle =
+    identity(query.address) === identity(choice.title) ||
+    poiMatch(query.address, choice.title, choice.address, {
+      city: choice.city,
+      province: choice.province,
+      district: choice.district,
+    }) === "EXACT_NAME";
   const declaredScope =
     exactTitle && !hasAdministrativeCityPrefix(query.address)
       ? query.city?.trim()
