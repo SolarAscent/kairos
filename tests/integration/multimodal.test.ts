@@ -393,14 +393,18 @@ describe("multimodal HTTP, socket, PostgreSQL and worker integration", () => {
       );
     let active = 0,
       peak = 0;
+    let markBothStarted!: () => void, release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => (markBothStarted = resolve));
+    const barrier = new Promise<void>((resolve) => (release = resolve));
     const worker = new OutboxWorker(database.pool, {
       providerName: "test-parallel",
       modelName: "test-model",
       parseCapture: async (input) => {
         active++;
         peak = Math.max(peak, active);
+        if (active === 2) markBothStarted();
         try {
-          await new Promise((resolve) => setTimeout(resolve, 30));
+          await barrier;
           return new MockModelProvider().parseCapture(
             typeof input === "string" ? input : input.text,
           );
@@ -409,7 +413,27 @@ describe("multimodal HTTP, socket, PostgreSQL and worker integration", () => {
         }
       },
     });
-    expect(await Promise.all([worker.processNext(), worker.processNext()])).toEqual([true, true]);
+    let timeout!: ReturnType<typeof setTimeout>;
+    const boundedStart = Promise.race([
+      bothStarted,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("Both model calls must reach the concurrency barrier")),
+          5000,
+        );
+      }),
+    ]);
+    const runners = [worker.processNext(), worker.processNext()];
+    const settled = Promise.allSettled(runners);
+    try {
+      await boundedStart;
+      expect(active).toBe(2);
+    } finally {
+      clearTimeout(timeout);
+      release();
+      await settled;
+    }
+    expect(await Promise.all(runners)).toEqual([true, true]);
     expect(peak).toBe(2);
     expect((await request("GET", `/v1/captures/${ids[0]}`)).json().data.title).toBe("并行读书计划");
     expect((await request("GET", `/v1/captures/${ids[1]}`)).json().data.title).toBe("并行散步计划");
@@ -433,7 +457,7 @@ describe("multimodal HTTP, socket, PostgreSQL and worker integration", () => {
         { status: "DONE", attempts: 1, locked_by: null },
       ]),
     );
-  });
+  }, 10000);
   it.each([false, true])(
     "defers duplicate model calls and recovers a stale PROCESSING capture=%s",
     async (stale) => {
