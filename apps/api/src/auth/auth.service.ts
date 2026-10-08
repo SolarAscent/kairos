@@ -45,6 +45,19 @@ export class AuthService {
           providerSubject: identity.openId,
           unionSubject: identity.unionId,
         });
+      } else if (identity.unionId) {
+        // Only the server's code2Session result can enrich the identity association.
+        // UnionID is metadata here, never a reason to merge accounts automatically.
+        await tx
+          .update(userIdentities)
+          .set({ unionSubject: identity.unionId })
+          .where(
+            and(
+              eq(userIdentities.userId, userId),
+              eq(userIdentities.provider, "WECHAT"),
+              eq(userIdentities.providerSubject, identity.openId),
+            ),
+          );
       }
       const [user] = await tx
         .select()

@@ -65,6 +65,7 @@ function mount(
         request: send,
         showToast: (options: any) => toasts.push(options),
         navigateTo: ({ url }: any) => navigations.push(url),
+        reLaunch: ({ url }: any) => navigations.push(url),
         navigateBack: () => {},
         getLocation: ({ fail }: any) => {
           locationCalls++;
@@ -121,6 +122,157 @@ function mount(
 function success(options: any, data: unknown) {
   options.success({ statusCode: 200, data: { data, request_id: requestId } });
 }
+describe("compiled personal-profile page", () => {
+  function profile(extra: object = {}) {
+    return {
+      userId,
+      nickname: "散步的人",
+      bio: "喜欢阅读",
+      avatarVersion: null,
+      identityProvider: "WECHAT",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-06T00:00:00.000Z",
+      ...extra,
+    };
+  }
+  it("loads account metadata, preserves edits across native picker hide/show, and saves into the shared home state", async () => {
+    const writes: any[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method === "POST") {
+          writes.push(options);
+          success(options, profile(options.data));
+        } else success(options, profile());
+      },
+      true,
+      "profile",
+    );
+    await page.loadProfile();
+    expect(page.data.nickname).toBe("散步的人");
+    expect(page.data.wechatLinked).toBe(true);
+    page.editNickname({ detail: { value: "新的称呼" } });
+    page.editBio({ detail: { value: "新的简介" } });
+    page.onShow();
+    expect(page.data.nickname).toBe("新的称呼");
+    await page.saveProfile();
+    expect(writes[0].data).toEqual({ nickname: "新的称呼", bio: "新的简介" });
+    expect(page.data.dirty).toBe(false);
+    expect(page.data.notice).toBe("个人资料已保存");
+    expect(page.services.sessionStore.nickname).toBe("新的称呼");
+    page.onUnload();
+  });
+  it("preserves a failed draft and its operation key, then uses a new key after edits", async () => {
+    const writes: any[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method === "POST") {
+          writes.push(options);
+          options.fail({ errMsg: "offline" });
+        } else success(options, profile());
+      },
+      false,
+      "profile",
+    );
+    await page.loadProfile();
+    page.editNickname({ detail: { value: "暂未保存" } });
+    await page.saveProfile();
+    await page.saveProfile();
+    expect(page.data.nickname).toBe("暂未保存");
+    expect(page.data.dirty).toBe(true);
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    page.editNickname({ detail: { value: "另一个称呼" } });
+    await page.saveProfile();
+    expect(writes[2].header["X-Idempotency-Key"]).not.toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.toasts).toHaveLength(0);
+    page.onUnload();
+  });
+  it("does not label a development account as linked to WeChat", async () => {
+    const page = mount(
+      (options) => success(options, profile({ identityProvider: "DEVELOPMENT" })),
+      false,
+      "profile",
+    );
+    await page.loadProfile();
+    expect(page.data.wechatLinked).toBe(false);
+    expect(page.data.identityLabel).toBe("开发体验账号");
+    page.onUnload();
+  });
+  it("downloads private avatar bytes to a local image and removes the cache on logout", async () => {
+    const version = randomUUID(),
+      files = new Map<string, string>();
+    const image = { mimeType: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" };
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          options.url.endsWith("/avatar")
+            ? { avatarVersion: version, image }
+            : profile({ avatarVersion: version }),
+        ),
+      false,
+      "profile",
+      {
+        env: { USER_DATA_PATH: "/user-data" },
+        getFileSystemManager: () => ({
+          writeFileSync: (path: string, bytes: string) => files.set(path, bytes),
+          unlinkSync: (path: string) => files.delete(path),
+        }),
+      },
+    );
+    await page.loadProfile();
+    expect(page.data.avatarPath).toContain(`${userId}-${version}.png`);
+    expect(files.get(page.data.avatarPath)).toBe(image.base64);
+    page.services.client.clear();
+    expect(files.size).toBe(0);
+    expect(page.services.sessionStore.avatarPath).toBe("");
+    page.onUnload();
+  });
+  it("ignores a delayed load after logout without restoring user content", async () => {
+    let pending: any;
+    const page = mount(
+      (options) => {
+        pending = options;
+      },
+      false,
+      "profile",
+    );
+    const loading = page.loadProfile();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    page.services.client.clear();
+    success(pending, profile());
+    await loading;
+    expect(page.data.nickname).toBe("");
+    expect(page.services.sessionStore.nickname).toBe("");
+    page.onUnload();
+  });
+  it("blocks an empty nickname and confirms leaving unsaved edits", async () => {
+    const modals: any[] = [];
+    const page = mount((options) => success(options, profile()), false, "profile", {
+      showModal: (options: any) => modals.push(options),
+    });
+    await page.loadProfile();
+    page.editNickname({ detail: { value: " " } });
+    await page.saveProfile();
+    expect(page.data.error).toContain("请填写");
+    page.goBack();
+    expect(modals[0].title).toBe("还有未保存的修改");
+    page.onUnload();
+  });
+  it("returns to a clean home after logout from the separate profile page", async () => {
+    const home = mount((options) => success(options, []));
+    home.setData({
+      draft: "旧账号内容",
+      recommendation: { headline: "旧建议" },
+      cards: [{ id: "old" }],
+    });
+    home.services.client.clear();
+    home.onShow();
+    expect(home.data.draft).toBe("");
+    expect(home.data.recommendation).toBeNull();
+    expect(home.data.cards).toEqual([]);
+    home.onUnload();
+  });
+});
 describe("compiled Mini Program page in a restricted JS runtime", () => {
   it("disables Zod JIT before contracts when Function returns a non-callable object", async () => {
     const page = mount((options) => {

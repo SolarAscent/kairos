@@ -2,6 +2,12 @@
 .screen { height: 100vh; display: flex; flex-direction: column; }
 .content { flex: 1; height: 0; }
 .page-body { padding: 28rpx 48rpx 56rpx; }
+.home-header { width: 100%; display: flex; align-items: center; justify-content: space-between; padding-bottom: 24rpx; }
+.home-wordmark { font-family: 'Bodoni 72', 'Times New Roman', serif; font-size: 38rpx; font-weight: 700; letter-spacing: 3rpx; }
+.profile-entry { width: auto !important; display: flex; align-items: center; margin: 0 !important; padding: 0 !important; line-height: 64rpx; }
+.profile-entry-label { font-size: 24rpx; color: #72827B; max-width: 180rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-entry-avatar, .profile-entry-default { width: 64rpx; height: 64rpx; border-radius: 50%; margin-left: 16rpx; }
+.profile-entry-default { font-family: 'Bodoni 72', 'Times New Roman', serif; color: #233C35; background: #DEE7DF; text-align: center; font-size: 34rpx; }
 .eyebrow { color: #72827B; font-size: 24rpx; letter-spacing: 3rpx; margin-bottom: 30rpx; }
 .headline { font-family: 'Songti SC', 'Noto Serif CJK SC', serif; font-size: 58rpx; line-height: 1.5; font-weight: 500; white-space: pre-line; }
 .copy { color: #72827B; font-size: 29rpx; line-height: 1.9; margin: 34rpx 0 52rpx; }

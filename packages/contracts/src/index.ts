@@ -84,6 +84,38 @@ export const imageInputSchema = z.strictObject({
     .max(Math.ceil(MAX_IMAGE_BYTES / 3) * 4)
     .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
 });
+
+export const MAX_AVATAR_BYTES = 256 * 1024;
+export const avatarInputSchema = imageInputSchema.extend({
+  base64: imageInputSchema.shape.base64.max(Math.ceil(MAX_AVATAR_BYTES / 3) * 4),
+});
+export const updateProfileRequestSchema = z.strictObject({
+  nickname: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .regex(/^[^\u0000-\u001f\u007f]*$/),
+  bio: z.string().trim().max(160),
+  // Omitted retains the avatar; null removes it. Never accept client identity or remote URLs.
+  avatar: avatarInputSchema.nullable().optional(),
+});
+export const userProfileSchema = z.object({
+  userId: uuidSchema,
+  nickname: z.string().nullable(),
+  bio: z.string(),
+  avatarVersion: uuidSchema.nullable(),
+  identityProvider: z.enum(["WECHAT", "DEVELOPMENT", "NONE"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export const userAvatarSchema = z.object({
+  avatarVersion: uuidSchema.nullable(),
+  image: avatarInputSchema.nullable(),
+});
+export type UserProfile = z.infer<typeof userProfileSchema>;
+export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
+export type AvatarInput = z.infer<typeof avatarInputSchema>;
 const captureInputFields = {
   sourceChannel: z.enum(["MINIPROGRAM", "DEMO", "API"]).default("DEMO"),
   language: z.string().max(16).optional(),

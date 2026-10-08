@@ -26,11 +26,14 @@ import { NowService } from "./now/now.service.js";
 import { FeedbackController } from "./feedback/feedback.controller.js";
 import { FeedbackService } from "./feedback/feedback.service.js";
 import { HealthController } from "./health.controller.js";
+import { ProfileController } from "./users/profile.controller.js";
+import { ProfileService } from "./users/profile.service.js";
 
 @Module({
   imports: [DatabaseModule],
   controllers: [
     AuthController,
+    ProfileController,
     MediaController,
     CapturesController,
     LifeController,
@@ -44,6 +47,7 @@ import { HealthController } from "./health.controller.js";
     IdempotencyService,
     AuthGuard,
     AuthService,
+    ProfileService,
     CapturesService,
     LifeService,
     PlaceLocationService,

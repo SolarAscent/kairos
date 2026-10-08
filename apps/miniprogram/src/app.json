@@ -1,5 +1,5 @@
 {
-  "pages": ["pages/home/index", "pages/life-list/index"],
+  "pages": ["pages/home/index", "pages/life-list/index", "pages/profile/index"],
   "permission": {
     "scope.userLocation": {
       "desc": "用于主动在地图选择地点、核对路线或查看附近"
