@@ -17,7 +17,9 @@ const messages: Record<string, string> = {
   LOCATION_UNAVAILABLE: "暂时无法获取位置，原来的建议还在，请检查定位与网络后重试。",
   MEDIA_UNSUPPORTED: "当前微信版本暂不支持选择图片，请更新微信后重试。",
   IMAGE_PERMISSION_REQUIRED: "无法打开相机或相册。请在微信设置中允许访问，或先输入文字。",
-  IMAGE_TOO_LARGE: "请选择不超过 2 MB 的图片。",
+  IMAGE_TOO_LARGE: "图片压缩后仍超过 2 MB，请裁剪后重试或换一张图片。",
+  IMAGE_PROCESSING_FAILED: "图片处理失败，请重新选择或换一张图片。",
+  IMAGE_FORMAT_OR_SIZE_INVALID: "图片格式或大小不符合要求，请重新选择图片。",
   IMAGE_FORMAT_UNSUPPORTED: "暂时支持 JPG 和 PNG 图片，请选择其他图片。",
   IMAGE_READ_FAILED: "图片读取失败，内容还在，可以重新选择。",
   VOICE_DEVICE_REQUIRED:

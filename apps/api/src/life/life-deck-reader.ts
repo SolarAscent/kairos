@@ -1,3 +1,4 @@
+import { lifeImageCaptureId } from "./life-image.js";
 import { BadRequestException } from "@nestjs/common";
 import { sql, type SQL } from "drizzle-orm";
 import type { Database } from "@life/db";
@@ -62,7 +63,7 @@ export class LifeDeckReader {
       (${cursor.score}::float8,${cursor.importance}::float8,${cursor.createdAt}::timestamptz,${cursor.id}::uuid)`
       : sql``;
     const result = await this.db.execute(sql`WITH ${preferenceCtes(userId, asOf)}, ranked AS (
-      SELECT o.id,o.title,o.summary,o.kind,o.status,o.importance_score AS importance,
+      SELECT ${lifeImageCaptureId(sql`o.id`, sql`o.user_id`)} AS "imageCaptureId",o.id,o.title,o.summary,o.kind,o.status,o.importance_score AS importance,
         o.created_at AS "createdAt",o.object_version AS "objectVersion",p.search_text AS "searchText",
         p.display_kind AS "displayKind",p.next_at AS "nextAt",p.expires_at AS "expiresAt",
         (p.latitude BETWEEN -90 AND 90 AND p.longitude BETWEEN -180 AND 180 AND p.coordinate_system='GCJ02') IS TRUE AS "hasLocation",

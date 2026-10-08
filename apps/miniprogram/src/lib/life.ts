@@ -21,6 +21,8 @@ function dateLabel(value: string) {
 export function displayLifeItem(item: LifeBrowseItem) {
   return {
     ...item,
+    imagePath: "",
+    imageFailed: false,
     kindLabel: kindOptions.find((option) => option.value === item.kind)!.label,
     savedDate: dateLabel(item.createdAt),
     nextDate: item.nextAt ? dateLabel(item.nextAt) : "",

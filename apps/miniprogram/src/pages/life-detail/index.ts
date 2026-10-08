@@ -451,7 +451,9 @@ Page({
     const sources = [...detail.sources]
       .filter((source) => source.sourceType === "CAPTURE")
       .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
-    const ids = [...new Set(sources.map((source) => source.sourceId))].slice(0, 3);
+    const ids = detail.imageCaptureId
+      ? [detail.imageCaptureId]
+      : [...new Set(sources.map((source) => source.sourceId))];
     state.imageDispose?.();
     state.imageDispose = undefined;
     this.updateData({ heroImagePath: "" });

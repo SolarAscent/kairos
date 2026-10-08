@@ -39,3 +39,7 @@
 .empty-panel button { margin-top:32rpx; min-height:88rpx; }
 .list-status { text-align:center; font-size:28rpx; line-height:1.8; color:#806754; padding:32rpx 0; }
 .more { margin-top:24rpx; min-height:88rpx; line-height:88rpx; font-size:30rpx; }
+
+.record-image { display:block; width:100%; height:320rpx; margin-bottom:24rpx; border-radius:4rpx; }
+
+.image-loading, .image-retry { display:block; box-sizing:border-box; width:100%; padding:36rpx 20rpx; margin-bottom:24rpx; text-align:center; color:#806956; background:#f4efe6; font-size:25rpx; border-radius:4rpx; }

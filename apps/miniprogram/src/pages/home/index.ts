@@ -34,12 +34,7 @@ import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
 import { getCurrentLocation, routeUnavailableMessage } from "../../lib/location";
 import { createRouteView, departureMessage } from "../../lib/route-view";
-import {
-  capabilitiesSchema,
-  chooseCaptureImage,
-  VoiceCapture,
-  type CaptureImage,
-} from "../../lib/media";
+import { chooseCaptureImage, VoiceCapture, type CaptureImage } from "../../lib/media";
 import { createLifeStack, kindOptions, type LifeStack } from "../../lib/life";
 import {
   getCaptureImageCacheEpoch,
@@ -120,7 +115,7 @@ type HomeCard = {
   original?: string;
 };
 type HomeSections = (Omit<LifeSections[number], "items"> & {
-  items: (LifeSections[number]["items"][number] & { kindLabel: string })[];
+  items: (LifeSections[number]["items"][number] & { kindLabel: string; imagePath?: string })[];
 })[];
 function savedDateLabel(iso: string) {
   const date = new Date(iso);
@@ -352,6 +347,10 @@ Page({
     this.clearPictures();
     this.updateData({
       recommendationImage: "",
+      sections: this.data.sections.map((section) => ({
+        ...section,
+        items: section.items.map((item) => ({ ...item, imagePath: "" })),
+      })),
       cards: this.data.cards.map((card) => ({
         ...card,
         imagePath: isCaptureImageCachePath(card.imagePath) ? "" : card.imagePath,
@@ -409,7 +408,7 @@ Page({
         picture?.dispose();
         return null;
       }
-      state.pictureCache.set(id, picture);
+      if (picture) state.pictureCache.set(id, picture);
       return picture;
     });
     state.pictureFlights.set(id, flight);
@@ -433,9 +432,11 @@ Page({
     try {
       const detail = await client.request(`/v1/life/${target}`, lifeDetailResponseSchema);
       if (!isCurrent()) return;
-      const sources = detail.sources.filter((source) => source.sourceType === "CAPTURE");
+      const sources = detail.imageCaptureId
+        ? [{ sourceId: detail.imageCaptureId, isPrimary: true }]
+        : detail.sources.filter((source) => source.sourceType === "CAPTURE");
       sources.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
-      for (const source of sources.slice(0, 3)) {
+      for (const source of sources) {
         const image = await this.readHomeCaptureImage(source.sourceId);
         if (!isCurrent()) return;
         if (image) {
@@ -452,7 +453,7 @@ Page({
     const state = this.runtime;
     const owner = client.userId;
     const generation = state.pictureGeneration;
-    const captures = this.data.captures.filter((capture) => capture.type === "IMAGE").slice(0, 12);
+    const captures = this.data.captures.filter((capture) => capture.type === "IMAGE");
     for (const capture of captures) {
       if (state.unloaded || client.userId !== owner || state.pictureGeneration !== generation)
         return;
@@ -477,6 +478,33 @@ Page({
         // Keep the original text and status when a historic image cannot be read.
       }
     }
+  },
+  async loadSectionImages() {
+    const state = this.runtime,
+      owner = client.userId,
+      generation = state.pictureGeneration;
+    for (const section of this.data.sections)
+      for (const item of section.items) {
+        if (!item.imageCaptureId || item.imagePath) continue;
+        try {
+          const picture = await this.readHomeCaptureImage(item.imageCaptureId);
+          if (state.unloaded || owner !== client.userId || generation !== state.pictureGeneration)
+            return;
+          if (picture)
+            this.updateData({
+              sections: this.data.sections.map((group) => ({
+                ...group,
+                items: group.items.map((current) =>
+                  current.id === item.id && current.imageCaptureId === item.imageCaptureId
+                    ? { ...current, imagePath: picture.path }
+                    : current,
+                ),
+              })),
+            });
+        } catch {
+          /* The record stays readable; an explicit refresh retries the image. */
+        }
+      }
   },
   restoreRouteView() {
     const cached = routeCache.get(client.userId, this.data.recommendation?.targetLifeObjectId);
@@ -1258,12 +1286,8 @@ Page({
     const generation = state.mediaGeneration;
     this.updateData({ inputMode: "image", imageLoading: true, error: "", capturePermission: "" });
     try {
-      const caps = await client.request("/v1/media/capabilities", capabilitiesSchema);
-      if (generation !== state.mediaGeneration || state.unloaded) return;
-      if (!caps.image) {
-        this.updateData({ error: "图片理解尚未配置。可以先留下文字，配置后再添加图片。" });
-        return;
-      }
+      // Saving a source photo does not require a healthy vision model.
+      // The backend persists it first; asynchronous interpretation may be retried.
       state.imagePickerOpen = true;
       const image = await chooseCaptureImage();
       if (generation !== state.mediaGeneration || state.unloaded || !image) return;
@@ -1756,11 +1780,13 @@ Page({
           ...section,
           items: section.items.map((item) => ({
             ...item,
+            imagePath: this.runtime.pictureCache.get(item.imageCaptureId ?? "")?.path ?? "",
             kindLabel:
               kindOptions.find((option) => option.value === item.kind)?.label ?? "生活记录",
           })),
         })),
       });
+      void this.loadSectionImages();
       const ids = new Set(captures.map((item) => item.id));
       this.renderCaptures(
         resetPages

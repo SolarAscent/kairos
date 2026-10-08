@@ -15,6 +15,7 @@ import {
   type LifeSection,
   type LifeSearchRequest,
 } from "@life/contracts";
+import { ImageGallery } from "../../lib/image-gallery";
 import { getAppearance } from "../../lib/appearance";
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
@@ -30,6 +31,7 @@ function locationAttemptKey(owner: string, item: LifeBrowseItem) {
 function createRuntime() {
   return {
     identityDispose: undefined as (() => void) | undefined,
+    images: new ImageGallery(client),
     unloaded: false,
     hidden: false,
     owner: client.userId,
@@ -87,11 +89,78 @@ function createData() {
 Page({
   data: createData(),
   runtime: null as unknown as ReturnType<typeof createRuntime>,
-  updateData(values: Partial<ReturnType<typeof createData>>) {
+  updateData(values: Partial<ReturnType<typeof createData>>, loadImages = true) {
     if (!this.runtime.unloaded) {
-      if (values.items) values.groups = groupLifeItems(values.items, this.data.groups);
+      if (values.items) {
+        values.items = values.items.map((item) => ({
+          ...item,
+          imagePath: this.runtime.images.path(item.imageCaptureId),
+        }));
+        values.groups = groupLifeItems(values.items, this.data.groups);
+      }
       this.setData(values);
+      if (values.items && loadImages) void this.loadItemImages();
     }
+  },
+  async loadItemImages() {
+    const state = this.runtime,
+      generation = state.generation,
+      owner = client.userId;
+    const ids = this.data.items.flatMap((item) =>
+      item.imageCaptureId && !item.imagePath && !item.imageFailed ? [item.imageCaptureId] : [],
+    );
+    const current = () =>
+      this.runtime === state &&
+      !state.unloaded &&
+      !state.hidden &&
+      owner === client.userId &&
+      generation === state.generation;
+    await state.images.load(
+      ids,
+      (id, path) => {
+        if (!current()) return;
+        this.updateData(
+          {
+            items: this.data.items.map((item) =>
+              item.imageCaptureId === id ? { ...item, imagePath: path, imageFailed: false } : item,
+            ),
+          },
+          false,
+        );
+      },
+      (id) => {
+        if (!current()) return;
+        this.updateData(
+          {
+            items: this.data.items.map((item) =>
+              item.imageCaptureId === id ? { ...item, imageFailed: true } : item,
+            ),
+          },
+          false,
+        );
+      },
+    );
+  },
+  imageLoadError(event: WechatMiniprogram.CustomEvent) {
+    const id = event.currentTarget.dataset.imageId;
+    if (!id) return;
+    this.runtime.images.invalidate(id);
+    this.updateData(
+      {
+        items: this.data.items.map((item) =>
+          item.imageCaptureId === id ? { ...item, imagePath: "", imageFailed: true } : item,
+        ),
+      },
+      false,
+    );
+  },
+  retryImage(event: WechatMiniprogram.TouchEvent) {
+    const id = event.currentTarget.dataset.imageId;
+    this.updateData({
+      items: this.data.items.map((item) =>
+        item.imageCaptureId === id ? { ...item, imageFailed: false } : item,
+      ),
+    });
   },
   observeIdentity() {
     const state = this.runtime;
@@ -106,6 +175,7 @@ Page({
     const state = this.runtime;
     if (state.owner === client.userId || state.unloaded) return;
     this.stopLocationPolling();
+    state.images.clear();
     state.identityDispose?.();
     state.unloaded = true;
     state.generation++;
@@ -186,6 +256,7 @@ Page({
     this.stopLocationPolling(false);
   },
   onUnload() {
+    this.runtime.images.clear();
     this.runtime.identityDispose?.();
     this.runtime.identityDispose = undefined;
     this.stopLocationPolling();
@@ -534,7 +605,10 @@ Page({
       client.userId === owner;
     if (state.unloaded || (!reset && (this.data.loading || !this.data.nextCursor))) return;
     const generation = reset ? ++state.generation : state.generation;
-    if (reset) this.stopLocationPolling();
+    if (reset) {
+      this.stopLocationPolling();
+      state.images.clear();
+    }
     this.updateData({
       loading: true,
       error: "",
