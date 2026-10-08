@@ -129,6 +129,32 @@ describe("native lifestyle API integration", () => {
     expect(saved.privacy).toEqual(original.privacy);
     expect((await settings(await login())).onboardingCompleted).toBe(false);
   });
+  it("keeps a completed questionnaire and its answers after a fresh login", async () => {
+    const code = randomUUID();
+    const original = (await request("POST", "/v1/auth/wechat/login", undefined, { code })).json()
+      .data;
+    const answers = {
+      recommendation: {
+        relaxation: "QUIET",
+        defaultMinutes: 60,
+        defaultBudget: 50,
+        goingOut: "YES",
+        homeRegion: "广州",
+      },
+      privacy: { useLocation: false },
+      onboardingCompleted: true,
+    };
+    const saved = await request("POST", "/v1/settings/update", original, answers);
+    expect(saved.statusCode).toBe(200);
+    const returning = (await request("POST", "/v1/auth/wechat/login", undefined, { code })).json()
+      .data;
+    expect(returning.userId).toBe(original.userId);
+    const restored = await settings(returning);
+    expect(restored.onboardingCompleted).toBe(true);
+    expect(restored.recommendation).toMatchObject(answers.recommendation);
+    expect(restored.privacy.useLocation).toBe(false);
+    expect((await settings(await login())).onboardingCompleted).toBe(false);
+  });
   it("isolates settings and replays a lost PATCH response without resetting later changes", async () => {
     const owner = await login(),
       other = await login();
