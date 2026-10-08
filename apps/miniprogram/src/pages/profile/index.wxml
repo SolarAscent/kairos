@@ -19,7 +19,7 @@
           <text wx:if="{{avatarError}}" class="error">{{avatarError}}</text>
         </view>
         <view class="form-card">
-          <view class="form-field"><text class="field-label">昵称</text><input class="nickname-input" type="nickname" value="{{nickname}}" bindinput="editNickname" bindblur="editNickname" maxlength="32" placeholder="填写你喜欢的称呼" disabled="{{saving}}" adjust-position cursor-spacing="24" /><text class="field-hint">可填写微信昵称，也可以自己取一个。</text></view>
+          <view class="form-field"><text class="field-label">昵称（可选）</text><input class="nickname-input" type="nickname" value="{{nickname}}" bindinput="editNickname" bindblur="editNickname" maxlength="32" placeholder="填写你喜欢的称呼" disabled="{{saving}}" adjust-position cursor-spacing="24" /><text class="field-hint">可填写微信昵称，也可以自己取一个。</text></view>
           <view class="field-divider"></view>
           <view class="form-field"><view class="field-heading"><text class="field-label">个人简介</text><text class="optional">选填</text></view><textarea class="bio-input" value="{{bio}}" bindinput="editBio" maxlength="160" placeholder="最近喜欢什么，或想成为怎样的自己…" disabled="{{saving}}" adjust-position cursor-spacing="24" /><text class="field-count">{{bio.length}} / 160</text></view>
         </view>

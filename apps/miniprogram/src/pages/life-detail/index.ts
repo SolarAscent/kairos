@@ -73,6 +73,8 @@ function data() {
     sourceTitle: "",
     sourceError: "",
     capabilityMessage: "",
+    ticketVerificationAvailable: false,
+    reminderDeliveryAvailable: false,
     storeEditing: false,
     storeQuery: "",
     mapPickerBusy: false,
@@ -214,6 +216,8 @@ Page({
       const capabilities = await client.request("/v1/ui-capabilities", uiCapabilitiesSchema);
       if (this.current(state, generation))
         this.updateData({
+          ticketVerificationAvailable: capabilities.ticketVerification.available,
+          reminderDeliveryAvailable: capabilities.reminderDelivery.available,
           capabilityMessage:
             !capabilities.ticketVerification.available || !capabilities.reminderDelivery.available
               ? "票券核验与消息提醒尚未接入。可先保存原文、门店备注和时间。"
