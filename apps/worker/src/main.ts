@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { createModelGateway } from "@life/agent-core";
 import { OutboxWorker } from "./worker.js";
+import { runRetentionLoop } from "./retention.js";
 
 loadEnv({ path: resolve(import.meta.dirname, "../../../.env"), quiet: true });
 
@@ -16,8 +17,10 @@ async function run() {
   });
   const worker = new OutboxWorker(pool, gateway);
   let stopping = false;
+  const maintenance = new AbortController();
   const shutdown = () => {
     stopping = true;
+    maintenance.abort();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -37,10 +40,12 @@ async function run() {
         await new Promise((resolve) => setTimeout(resolve, 250));
     }
   });
+  runners.push(runRetentionLoop(pool, maintenance.signal));
   try {
     await Promise.all(runners);
   } finally {
     stopping = true;
+    maintenance.abort();
     await Promise.allSettled(runners);
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);

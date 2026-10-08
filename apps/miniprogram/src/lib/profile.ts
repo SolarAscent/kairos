@@ -9,6 +9,7 @@ import {
   type UserProfile,
 } from "@life/contracts";
 import { ApiClient, ClientError } from "./client";
+import { pruneStoredAvatarVersions } from "./local-retention";
 
 export const DEFAULT_NICKNAME = "KAIROS 用户";
 
@@ -92,6 +93,7 @@ export class ProfileClient {
       this.avatarPath = "";
     }
     this.profile = profile;
+    pruneStoredAvatarVersions(profile.userId, profile.avatarVersion);
     this.avatarError = "";
     this.onChange(profile, this.avatarPath);
   }

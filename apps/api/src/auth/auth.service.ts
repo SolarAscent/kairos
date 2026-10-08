@@ -63,8 +63,9 @@ export class AuthService {
         .select()
         .from(users)
         .where(and(eq(users.id, userId), eq(users.status, "ACTIVE"), isNull(users.deletedAt)))
-        .for("share");
+        .for("update");
       if (!user) throw new UnauthorizedException({ code: "ACCOUNT_INACTIVE" });
+      await tx.update(users).set({ lastActiveAt: new Date() }).where(eq(users.id, userId));
       await tx.insert(authSessions).values({
         id: sessionId,
         userId,
@@ -101,8 +102,9 @@ export class AuthService {
         .where(
           and(eq(users.id, session.userId), eq(users.status, "ACTIVE"), isNull(users.deletedAt)),
         )
-        .for("share");
+        .for("update");
       if (!user) throw new UnauthorizedException({ code: "ACCOUNT_INACTIVE" });
+      await tx.update(users).set({ lastActiveAt: new Date() }).where(eq(users.id, session.userId));
       await tx
         .update(authSessions)
         .set({ revokedAt: new Date() })
