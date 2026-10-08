@@ -170,6 +170,7 @@ describe("PostgreSQL + HTTP + Worker", () => {
       { name: "0001_initial.sql" },
       { name: "0002_capture_pipeline.sql" },
       { name: "0003_user_profile.sql" },
+      { name: "0004_privacy_retention.sql" },
     ]);
     expect((await request("GET", "/health/ready")).statusCode).toBe(200);
   });
