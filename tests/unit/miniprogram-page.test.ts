@@ -1056,7 +1056,7 @@ describe("Home context and multimodal input interactions", () => {
           locations++;
           options.success({ latitude: 23.1, longitude: 113.2 });
         },
-        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+        setStorageSync: (key: string, value: unknown) => stored.push({ key, value }),
       },
     );
     return { page, writes, target, response, choices, stored, locations: () => locations };
@@ -1142,7 +1142,7 @@ describe("Home context and multimodal input interactions", () => {
           locations++;
           options.success({ latitude: 23.1, longitude: 113.2 });
         },
-        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+        setStorageSync: (key: string, value: unknown) => stored.push({ key, value }),
       },
     );
     return { page, response, target, picked, writes, native, stored, locations: () => locations };
@@ -1204,7 +1204,8 @@ describe("Home context and multimodal input interactions", () => {
     expect(now[1].data).toMatchObject({ focusObjectId: target, context: {} });
     expect(now[1].header["X-Idempotency-Key"]).not.toBe(now[0].header["X-Idempotency-Key"]);
     expect(locations()).toBe(0);
-    expect(stored).toEqual([]);
+    // Cache invalidation stores only a counter, never coordinates or selection tokens.
+    expect(stored).toEqual([{ key: "kairos:capture-image-cache:epoch", value: 1 }]);
     await page.verifyCurrentRoute();
     expect(locations()).toBe(1);
     expect(writes.some((item) => item.url.endsWith("/locations/choices"))).toBe(false);
@@ -1491,7 +1492,8 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.services.routeCache.get(userId, target).view.longitude).toBe(121.4);
     expect(page.data.locationChoices).toEqual([]);
     expect(page.runtime.choiceContext).toBeNull();
-    expect(stored).toEqual([]);
+    // Cache invalidation stores only a counter, never coordinates or selection tokens.
+    expect(stored).toEqual([{ key: "kairos:capture-image-cache:epoch", value: 1 }]);
     page.onUnload();
   });
   it("requires confirmation even for a single choice and cancelling preserves the original recommendation", async () => {
@@ -1670,7 +1672,7 @@ describe("Home context and multimodal input interactions", () => {
           expect(options.type).toBe("gcj02");
           options.success({ latitude: 23.1291, longitude: 113.2644 });
         },
-        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+        setStorageSync: (key: string, value: unknown) => stored.push({ key, value }),
       },
     );
     await page.decide();
@@ -1694,7 +1696,8 @@ describe("Home context and multimodal input interactions", () => {
       7200000,
     );
     expect(Date.parse(location.expiresAt)).toBeGreaterThan(Date.now());
-    expect(stored).toEqual([]);
+    // Cache invalidation stores only a counter, never coordinates or selection tokens.
+    expect(stored).toEqual([{ key: "kairos:capture-image-cache:epoch", value: 1 }]);
     expect(JSON.stringify(page.data)).not.toContain("113.2644");
     page.onHide();
     expect(page.runtime.requestLocation).toBeNull();
@@ -1833,7 +1836,7 @@ describe("Home context and multimodal input interactions", () => {
           locations++;
           options.success(detail.origin);
         },
-        setStorageSync: (_key: string, value: unknown) => stored.push(value),
+        setStorageSync: (key: string, value: unknown) => stored.push({ key, value }),
         openLocation: (options: any) => opened.push(options),
       },
     );
@@ -1857,7 +1860,8 @@ describe("Home context and multimodal input interactions", () => {
     expect(page.data.canVerifyRoute).toBe(true);
     expect(page.runtime.requestLocation).toBeNull();
     expect(page.runtime.nowPending).toBeNull();
-    expect(stored).toEqual([]);
+    // Cache invalidation stores only a counter, never coordinates or selection tokens.
+    expect(stored).toEqual([{ key: "kairos:capture-image-cache:epoch", value: 1 }]);
     page.openRouteDestination();
     expect(opened).toHaveLength(1);
     expect(opened[0]).toMatchObject({
@@ -1893,7 +1897,8 @@ describe("Home context and multimodal input interactions", () => {
     expect(recreated.data.routeView.polyline[0].points).toEqual(detail.segments[0]!.points);
     expect(posts).toBe(2);
     expect(locations).toBe(1);
-    expect(stored).toEqual([]);
+    // Cache invalidation stores only a counter, never coordinates or selection tokens.
+    expect(stored).toEqual([{ key: "kairos:capture-image-cache:epoch", value: 1 }]);
     recreated.services.client.clear();
     expect(
       recreated.services.routeCache.get(userId, response.recommendation.targetLifeObjectId),
