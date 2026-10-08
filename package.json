@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "build:miniprogram": "pnpm --filter @life/miniprogram... build",
+    "build:miniprogram:release": "pnpm --filter @life/contracts build && pnpm --filter @life/miniprogram build:release",
     "wechat:check": "pnpm --filter @life/miniprogram check",
     "wechat:check:server": "pnpm --filter @life/api... build && node --env-file-if-exists=.env apps/api/scripts/check-wechat.mjs"
   },

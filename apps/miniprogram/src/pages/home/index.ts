@@ -229,6 +229,7 @@ function createRuntime() {
     voiceSessionId: "",
     voiceFade: undefined as ReturnType<typeof setTimeout> | undefined,
     onboardingCheckedUser: "",
+    onboardingFlight: false,
     pictureGeneration: 0,
     pictureCacheEpoch: getCaptureImageCacheEpoch(),
     pictureCache: new Map<string, Awaited<ReturnType<typeof readCaptureImage>>>(),
@@ -281,7 +282,8 @@ function createData() {
     notice: "",
     error: "",
     busy: false,
-    loginLabel: __MINIPROGRAM_CONFIG__.loginMode === "mock" ? "开发模式登录" : "微信登录",
+    loginLabel: __MINIPROGRAM_CONFIG__.loginMode === "mock" ? "开发模式登录" : "微信登录并开始使用",
+    onboardingError: "",
     sections: [] as HomeSections,
     captures: [] as (CaptureResponse & { statusLabel: string })[],
     lifeCaptures: [] as (CaptureResponse & { statusLabel: string })[],
@@ -623,6 +625,7 @@ Page({
     this.restoreRouteView();
     if (client.userId) {
       void profiles.load(true).catch(() => {});
+      void this.checkOnboarding();
       if (imagesCleared) {
         const target = this.data.recommendation?.targetLifeObjectId;
         if (target) void this.loadRecommendationImage(target);
@@ -764,15 +767,35 @@ Page({
   async checkOnboarding() {
     const state = this.runtime;
     const owner = client.userId;
-    if (!owner || state.onboardingCheckedUser === owner) return;
-    state.onboardingCheckedUser = owner;
+    if (!owner || state.onboardingCheckedUser === owner || state.onboardingFlight) return;
+    state.onboardingFlight = true;
     try {
       const settings = await client.request("/v1/settings", userSettingsResponseSchema);
-      if (state.unloaded || client.userId !== owner || settings.onboardingCompleted) return;
-      wx.navigateTo({ url: "/pages/onboarding/index" });
+      if (state.unloaded || !state.visible || client.userId !== owner) return;
+      state.onboardingCheckedUser = owner;
+      this.updateData({ onboardingError: "" });
+      if (!settings.onboardingCompleted)
+        wx.navigateTo({
+          url: "/pages/onboarding/index",
+          fail: () => {
+            state.onboardingCheckedUser = "";
+            this.updateData({ onboardingError: "暂时无法打开首次设定，请重试。" });
+          },
+        });
     } catch {
-      // A settings read failure must not block recording or logging in.
+      if (!state.unloaded && state.visible && client.userId === owner)
+        this.updateData({ onboardingError: "首次设定暂时未能读取，可以重试或稍后在设置中填写。" });
+    } finally {
+      state.onboardingFlight = false;
     }
+  },
+  openProfile() {
+    if (client.userId && !this.data.busy) wx.navigateTo({ url: "/pages/profile/index" });
+  },
+  openPrivacy() {
+    wx.openPrivacyContract({
+      fail: () => this.updateData({ error: "暂时无法打开隐私说明，请稍后重试。" }),
+    });
   },
   async signOut() {
     const state = this.runtime;
@@ -789,9 +812,6 @@ Page({
       this.resetSessionContent();
       this.updateData({ busy: false });
     }
-  },
-  openProfile() {
-    if (client.userId && !this.data.busy) wx.navigateTo({ url: "/pages/profile/index" });
   },
   switchTab(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;

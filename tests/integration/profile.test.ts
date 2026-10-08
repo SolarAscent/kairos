@@ -63,6 +63,27 @@ function request(
 }
 
 describe("persisted current-user profile and verified identity association", () => {
+  it("allows an avatar or bio without requiring a nickname and lets users clear their nickname", async () => {
+    const user = await login();
+    const first = await request(user.accessToken, "POST", "/v1/users/me/profile", {
+      nickname: null,
+      bio: "喜欢安静散步",
+      avatar: png,
+    });
+    expect(first.statusCode).toBe(201);
+    expect(first.json().data.nickname).toBeNull();
+    await request(user.accessToken, "POST", "/v1/users/me/profile", {
+      nickname: "同行的人",
+      bio: "",
+    });
+    const cleared = await request(user.accessToken, "POST", "/v1/users/me/profile", {
+      nickname: null,
+      bio: "",
+    });
+    expect(cleared.statusCode).toBe(201);
+    expect(cleared.json().data.nickname).toBeNull();
+    expect(cleared.json().data.avatarVersion).toBe(first.json().data.avatarVersion);
+  });
   it("requires authentication for metadata, avatar and writes", async () => {
     for (const url of ["/v1/users/me", "/v1/users/me/avatar"])
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);

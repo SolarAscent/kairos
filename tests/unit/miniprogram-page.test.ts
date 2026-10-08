@@ -256,15 +256,15 @@ describe("compiled personal-profile page", () => {
     expect(page.services.sessionStore.nickname).toBe("");
     page.onUnload();
   });
-  it("blocks an empty nickname and confirms leaving unsaved edits", async () => {
+  it("blocks an oversized nickname and confirms leaving unsaved edits", async () => {
     const modals: any[] = [];
     const page = mount((options) => success(options, profile()), false, "profile", {
       showModal: (options: any) => modals.push(options),
     });
     await page.loadProfile();
-    page.editNickname({ detail: { value: " " } });
+    page.editNickname({ detail: { value: "长".repeat(33) } });
     await page.saveProfile();
-    expect(page.data.error).toContain("请填写");
+    expect(page.data.error).toContain("昵称最多");
     page.goBack();
     expect(modals[0].title).toBe("还有未保存的修改");
     page.onUnload();
@@ -3184,4 +3184,45 @@ it("replaces the superseded failed draft card so its retry cannot silently submi
   page.viewCapture({ currentTarget: { dataset: { id: failures[0].id } } });
   expect(page.data.captureReview.original).toBe("修改后的草稿");
   page.onUnload();
+});
+
+describe("returning sessions and first-use setup", () => {
+  it("checks onboarding for a restored login and retries a failed read on return", async () => {
+    let reads = 0;
+    const page = mount(() => {}, false, "home", {
+      request: (options: any) => {
+        if (options.url.endsWith("/v1/settings")) {
+          if (++reads === 1) options.fail({ errMsg: "offline" });
+          else
+            success(
+              options,
+              userSettingsResponseSchema.parse({
+                recommendation: {},
+                privacy: {},
+                notifications: {},
+                onboardingCompleted: false,
+                updatedAt: null,
+              }),
+            );
+        } else if (options.url.includes("/v1/captures/page"))
+          success(options, { items: [], nextCursor: null });
+        else success(options, []);
+      },
+    });
+    const flush = async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+    page.onShow();
+    await flush();
+    expect(page.data.onboardingError).not.toBe("");
+    expect(page.navigations).toEqual([]);
+    page.onHide();
+    page.onShow();
+    await flush();
+    expect(reads).toBe(2);
+    expect(page.navigations).toEqual(["/pages/onboarding/index"]);
+    await page.checkOnboarding();
+    expect(reads).toBe(2);
+    page.onUnload();
+  });
 });

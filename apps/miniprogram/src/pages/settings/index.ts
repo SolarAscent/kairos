@@ -114,6 +114,8 @@ function createData() {
     cacheBusy: false,
     exportBusy: false,
     exportStatus: "导出原始记录为文本",
+    reminderAvailable: false,
+    exportAvailable: false,
     permissionSummary: "按需请求",
   };
 }
@@ -241,6 +243,8 @@ Page({
         );
         if (this.isCurrent(state, generation, owner))
           this.updateData({
+            reminderAvailable: capabilities.reminderDelivery.available,
+            exportAvailable: capabilities.recordExport.available,
             exportStatus: capabilities.recordExport.available
               ? "导出全部原始记录为文本"
               : "导出功能暂不可用",
@@ -259,6 +263,25 @@ Page({
     const field = String(event.currentTarget.dataset.field) as keyof Draft;
     const value = event.currentTarget.dataset.value;
     this.applyChange(field, value);
+  },
+  openProfile() {
+    if (this.data.busy || this.data.dirty) {
+      this.updateData({ error: "请先保存当前设定，再编辑个人资料。" });
+      return;
+    }
+    wx.navigateTo({ url: "/pages/profile/index" });
+  },
+  openOnboarding() {
+    if (this.data.busy || this.data.dirty) {
+      this.updateData({ error: "请先保存当前设定，再重新填写问卷。" });
+      return;
+    }
+    wx.navigateTo({ url: "/pages/onboarding/index" });
+  },
+  openPrivacy() {
+    wx.openPrivacyContract({
+      fail: () => this.updateData({ error: "暂时无法打开隐私说明，请稍后重试。" }),
+    });
   },
   applyChange(field: keyof Draft, value: unknown) {
     if (this.data.busy) return;

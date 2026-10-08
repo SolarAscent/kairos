@@ -30,8 +30,10 @@
         <button class="primary" bindtap="signIn" loading="{{busy}}" disabled="{{busy}}">
           {{loginLabel}}
         </button>
+        <button class="text-button" bindtap="openPrivacy">查看隐私保护指引</button>
       </view>
-      <block wx:elif="{{tab === 'now'}}">
+      <view wx:if="{{userId && onboardingError}}" class="empty"><text>{{onboardingError}}</text><button class="secondary" bindtap="checkOnboarding">重新读取首次设定</button></view>
+      <block wx:if="{{userId && tab === 'now'}}">
         <view class="moment-heading"
           ><text>{{recommendation ? '给现在的一个小提议' : '给生活留一点空白'}}</text
           ><button
@@ -165,16 +167,17 @@
             <text class="quiet-caption">给生活留一点空白</text>
           </view>
           <text class="headline"
-            >{{decided ? '现在，也可以\n不急着决定。' : '有一点空闲，\n想怎么度过？'}}</text
+            >{{!cards.length ? '从第一个念头开始。' : decided ? '现在，也可以\n不急着决定。' : '有一点空闲，\n想怎么度过？'}}</text
           >
           <text class="copy"
-            >{{decided ? (quietReason || '暂时没有合适的建议。再留下一个想做的念头，也可以。') :
+            >{{!cards.length ? '留下想做的事、想去的地方，或一张想留住的图片。' : decided ? (quietReason || '暂时没有合适的建议。再留下一个想做的念头，也可以。') :
             '从你留下的念头里，找一件适合现在的小事。'}}</text
           >
-          <button class="primary" bindtap="decide" loading="{{busy}}" disabled="{{busy}}">
+          <button wx:if="{{cards.length}}" class="primary" bindtap="decide" loading="{{busy}}" disabled="{{busy}}">
             {{decided ? '再看看' : '给我一个建议'}}
           </button>
-          <button class="text-button quiet-record" bindtap="openCapture" disabled="{{busy}}">
+          <button wx:else class="primary" bindtap="openCapture" disabled="{{busy}}">留下第一条记录</button>
+          <button wx:if="{{cards.length}}" class="text-button quiet-record" bindtap="openCapture" disabled="{{busy}}">
             ＋ 留下一个念头
           </button>
         </view>
@@ -211,7 +214,7 @@
           ></view
         >
       </block>
-      <block wx:elif="{{tab === 'journal'}}">
+      <block wx:elif="{{userId && tab === 'journal'}}">
         <view class="journal-intro"
           ><text class="headline">留住一闪而过的念头</text
           ><text class="copy">写一句、说一段，或留下一张图片。</text
@@ -255,7 +258,7 @@
         <text wx:if="{{capturesMoreError}}" class="error">{{capturesMoreError}}</text>
         <button wx:if="{{capturesHasMore}}" class="secondary" bindtap="loadMoreCaptures" disabled="{{capturesLoading || busy}}">{{capturesLoading ? '正在加载…' : capturesMoreError ? '重试加载记录' : '继续查看'}}</button>
       </block>
-      <block wx:else>
+      <block wx:elif="{{userId && tab === 'life'}}">
         <view class="life-intro"
           ><text class="headline">生活里留下的</text
           ><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">
@@ -465,13 +468,6 @@
             >
               ＋ 配图
             </button></view
-          ><view class="arrangement-rows">
-            <view class="arrangement-row"
-              ><text>预约日期</text><text class="arrangement-value">待接入</text></view
-            >
-            <view class="arrangement-row"
-              ><text>关联票券</text><text class="arrangement-value">待接入</text></view
-            > </view
           ><text wx:if="{{error}}" class="error">{{error}}</text
           ><button wx:if="{{capturePermission}}" class="secondary" bindtap="openCapturePermissions" disabled="{{busy}}">打开微信权限设置</button
           ><button
