@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -29,13 +30,19 @@ import {
 } from "@life/db";
 import { v7 as uuidv7 } from "uuid";
 import { buildLifeProjection } from "@life/domain";
-import { verifiedDestinationForObject } from "@life/integrations";
+import { verifiedDestinationForObject, userSelectedDestinationForObject } from "@life/integrations";
 import { IdempotencyService } from "../common/idempotency.service.js";
 import { DATABASE } from "../common/tokens.js";
 import { PreferenceReader } from "../feedback/preference-reader.js";
 import { LifeDeckReader } from "./life-deck-reader.js";
 
-const cursorSchema = z.object({ createdAt: z.iso.datetime(), id: uuidSchema });
+type LifeTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+const cursorSchema = z.object({
+  createdAt: z.iso.datetime(),
+  id: uuidSchema,
+  signature: z.string().length(43),
+});
 const listFields = {
   id: lifeObjects.id,
   title: lifeObjects.title,
@@ -77,7 +84,8 @@ export class LifeService {
       lifeSectionSchema.options.map(async (section) => ({
         section,
         title: lifeSectionTitles[section],
-        items: (await this.search(userId, { section, location: "ALL", limit: 3 })).items,
+        items: (await this.search(userId, { section, scope: "SECTION", location: "ALL", limit: 3 }))
+          .items,
       })),
     );
     return groups.filter((group) => group.items.length > 0);
@@ -133,6 +141,50 @@ export class LifeService {
     return { ...result.body, replayed: result.replayed };
   }
 
+  private async cancelObjectActions(
+    tx: LifeTransaction,
+    userId: string,
+    id: string,
+    reason: "OBJECT_DELETED" | "OBJECT_RESOLVED" | "OBJECT_ARCHIVED",
+    now: Date,
+  ) {
+    // Cancellation records the status change, without claiming completion or dislike.
+    await tx.execute(sql`INSERT INTO feedback_events
+          (id,user_id,recommendation_id,decision_session_id,event_type,reason_code,metadata,client_event_id,created_at)
+          SELECT gen_random_uuid(),${userId}::uuid,r.id,r.decision_session_id,'DISMISS',${reason},
+            ${JSON.stringify({ reason })}::jsonb,gen_random_uuid(),
+            greatest(${now.toISOString()}::timestamptz,coalesce((SELECT max(f.created_at)+interval '1 microsecond'
+              FROM feedback_events f WHERE f.user_id=r.user_id AND f.recommendation_id=r.id),${now.toISOString()}::timestamptz))
+          FROM recommendations r JOIN action_candidates c ON c.id=r.action_candidate_id AND c.user_id=r.user_id
+          WHERE r.user_id=${userId}::uuid AND c.target_life_object_id=${id}::uuid
+            AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
+              AND f.event_type IN ('ACCEPT','EXECUTE'))
+            AND NOT EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
+              AND f.event_type IN ('COMPLETE','REJECT','DISMISS','SKIP')
+              AND (f.created_at,f.id) > (SELECT started.created_at,started.id FROM feedback_events started
+                WHERE started.user_id=r.user_id AND started.recommendation_id=r.id
+                  AND started.event_type IN ('ACCEPT','EXECUTE')
+                ORDER BY started.created_at,started.id LIMIT 1))`);
+    await tx.execute(sql`UPDATE decision_sessions s SET status='CLOSED',closed_at=${now.toISOString()}::timestamptz
+          WHERE s.user_id=${userId}::uuid AND s.status<>'CLOSED'
+            AND EXISTS(SELECT 1 FROM recommendations r JOIN action_candidates c
+              ON c.id=r.action_candidate_id AND c.user_id=r.user_id
+              WHERE r.user_id=s.user_id AND r.decision_session_id=s.id
+                AND c.target_life_object_id=${id}::uuid)`);
+    await tx
+      .update(actionCandidates)
+      .set({
+        hardFilterStatus: "FILTERED",
+        hardFilterReason: "SOURCE_UNAVAILABLE",
+        rank: null,
+      })
+      .where(and(eq(actionCandidates.userId, userId), eq(actionCandidates.targetLifeObjectId, id)));
+    await tx.execute(sql`UPDATE clarification_requests q SET status='CANCELLED'
+          WHERE q.user_id=${userId}::uuid AND q.status='PENDING'
+            AND EXISTS(SELECT 1 FROM decision_sessions s WHERE s.id=q.decision_session_id
+              AND s.user_id=q.user_id AND s.status='CLOSED')`);
+  }
+
   async delete(userId: string, id: string, key: string | undefined, traceId: string) {
     const result = await this.idempotency.execute(
       userId,
@@ -162,39 +214,7 @@ export class LifeService {
               objectVersion: object.objectVersion + 1,
             })
             .where(eq(lifeObjects.id, id));
-          // Cancellation changes action progress without claiming this category is disliked.
-          await tx.execute(sql`INSERT INTO feedback_events
-          (id,user_id,recommendation_id,decision_session_id,event_type,reason_code,metadata,client_event_id,created_at)
-          SELECT gen_random_uuid(),${userId}::uuid,r.id,r.decision_session_id,'DISMISS','OBJECT_DELETED',
-            '{"reason":"OBJECT_DELETED"}'::jsonb,gen_random_uuid(),
-            greatest(${now.toISOString()}::timestamptz,coalesce((SELECT max(f.created_at)+interval '1 microsecond'
-              FROM feedback_events f WHERE f.user_id=r.user_id AND f.recommendation_id=r.id),${now.toISOString()}::timestamptz))
-          FROM recommendations r JOIN action_candidates c ON c.id=r.action_candidate_id AND c.user_id=r.user_id
-          WHERE r.user_id=${userId}::uuid AND c.target_life_object_id=${id}::uuid
-            AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
-              AND f.event_type IN ('ACCEPT','EXECUTE'))
-            AND NOT EXISTS(SELECT 1 FROM feedback_events f WHERE f.recommendation_id=r.id AND f.user_id=r.user_id
-              AND f.event_type IN ('COMPLETE','REJECT','DISMISS','SKIP'))`);
-          await tx.execute(sql`UPDATE decision_sessions s SET status='CLOSED',closed_at=${now.toISOString()}::timestamptz
-          WHERE s.user_id=${userId}::uuid AND s.status<>'CLOSED'
-            AND EXISTS(SELECT 1 FROM recommendations r JOIN action_candidates c
-              ON c.id=r.action_candidate_id AND c.user_id=r.user_id
-              WHERE r.user_id=s.user_id AND r.decision_session_id=s.id
-                AND c.target_life_object_id=${id}::uuid)`);
-          await tx
-            .update(actionCandidates)
-            .set({
-              hardFilterStatus: "FILTERED",
-              hardFilterReason: "SOURCE_UNAVAILABLE",
-              rank: null,
-            })
-            .where(
-              and(eq(actionCandidates.userId, userId), eq(actionCandidates.targetLifeObjectId, id)),
-            );
-          await tx.execute(sql`UPDATE clarification_requests q SET status='CANCELLED'
-          WHERE q.user_id=${userId}::uuid AND q.status='PENDING'
-            AND EXISTS(SELECT 1 FROM decision_sessions s WHERE s.id=q.decision_session_id
-              AND s.user_id=q.user_id AND s.status='CLOSED')`);
+          await this.cancelObjectActions(tx, userId, id, "OBJECT_DELETED", now);
           await tx.insert(auditEvents).values({
             id: uuidv7(),
             actorType: "USER",
@@ -214,12 +234,30 @@ export class LifeService {
 
   async search(userId: string, input: LifeSearchRequest) {
     const now = new Date();
+    const scope = input.scope ?? "SECTION";
+    // Bind continuation to the owner and every semantic filter, not the page size.
+    const signature = createHash("sha256")
+      .update(
+        JSON.stringify({
+          userId,
+          scope,
+          section: scope === "SECTION" ? input.section : null,
+          query: input.query ?? "",
+          savedWithinDays: input.savedWithinDays ?? null,
+          kind: input.kind ?? null,
+          location: input.location,
+          center: input.location === "NEARBY" ? input.center : null,
+        }),
+      )
+      .digest("base64url");
     const conditions = [
       eq(lifeObjects.userId, userId),
       isNull(lifeObjects.deletedAt),
-      eq(lifeObjects.status, input.section === "HAPPENED" ? "RESOLVED" : "ACTIVE"),
+      scope === "ALL_RECORDED"
+        ? inArray(lifeObjects.status, ["ACTIVE", "RESOLVED"])
+        : eq(lifeObjects.status, input.section === "HAPPENED" ? "RESOLVED" : "ACTIVE"),
     ];
-    switch (input.section) {
+    switch (scope === "SECTION" ? input.section : undefined) {
       case "UPCOMING": {
         const soon = new Date(now.getTime() + 14 * 86400000);
         conditions.push(
@@ -265,6 +303,12 @@ export class LifeService {
         gte(lifeObjects.createdAt, new Date(now.getTime() - input.savedWithinDays * 86400000)),
       );
     if (input.kind) conditions.push(eq(lifeObjects.kind, input.kind));
+    if (input.query) {
+      // Literal substring search: user-entered % and _ are not SQL wildcards.
+      conditions.push(
+        sql`strpos(lower(concat_ws(' ', ${lifeObjects.title}, ${lifeObjects.summary}, ${lifeObjectProjection.searchText})), lower(${input.query})) > 0`,
+      );
+    }
     let distance = sql<number | null>`null::double precision`;
     if (input.location === "LOCATED" || input.location === "NEARBY") conditions.push(hasLocation);
     if (input.location === "UNLOCATED") conditions.push(sql`not (${hasLocation})`);
@@ -281,6 +325,7 @@ export class LifeService {
       let cursor: z.infer<typeof cursorSchema>;
       try {
         cursor = cursorSchema.parse(JSON.parse(Buffer.from(input.cursor, "base64url").toString()));
+        if (cursor.signature !== signature) throw new Error("Life cursor filters changed");
       } catch {
         throw new BadRequestException({ code: "INVALID_LIFE_CURSOR" });
       }
@@ -340,9 +385,9 @@ export class LifeService {
       items,
       nextCursor:
         rows.length > input.limit && last
-          ? Buffer.from(JSON.stringify({ createdAt: last.cursorCreatedAt, id: last.id })).toString(
-              "base64url",
-            )
+          ? Buffer.from(
+              JSON.stringify({ createdAt: last.cursorCreatedAt, id: last.id, signature }),
+            ).toString("base64url")
           : null,
     };
   }
@@ -387,6 +432,10 @@ export class LifeService {
       key,
       input,
       async (tx) => {
+        if (input.status === "RESOLVED" || input.status === "ARCHIVED")
+          await tx.execute(
+            sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId + ":action-plan"},0))`,
+          );
         const [object] = await tx
           .select()
           .from(lifeObjects)
@@ -414,6 +463,14 @@ export class LifeService {
           objectVersion: object.objectVersion + 1,
         };
         await tx.update(lifeObjects).set(changes).where(eq(lifeObjects.id, id));
+        if (input.status === "RESOLVED" || input.status === "ARCHIVED")
+          await this.cancelObjectActions(
+            tx,
+            userId,
+            id,
+            input.status === "RESOLVED" ? "OBJECT_RESOLVED" : "OBJECT_ARCHIVED",
+            now,
+          );
         for (const edit of input.facts ?? []) {
           // Keep replaced AI evidence in the database as historical facets; explicit corrections win.
           await tx
@@ -558,6 +615,23 @@ export class LifeService {
       .select()
       .from(lifeObjectSources)
       .where(and(eq(lifeObjectSources.userId, userId), eq(lifeObjectSources.lifeObjectId, id)));
-    return { ...object, facets, sources };
+    const learned = await new PreferenceReader(this.db).read(userId, [object]);
+    const selected = userSelectedDestinationForObject(object, facets);
+    return {
+      ...object,
+      facets,
+      sources,
+      ...(learned.get(id) ?? { myRating: "NONE", preferenceScore: 0 }),
+      verifiedDestination: verifiedDestinationForObject(object, facets) ?? null,
+      selectedDestination:
+        selected?.source === "USER_SELECTED_MAP"
+          ? {
+              ...selected.location,
+              name: selected.name,
+              address: selected.address,
+              source: selected.source,
+            }
+          : null,
+    };
   }
 }

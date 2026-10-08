@@ -84,6 +84,39 @@ export const imageInputSchema = z.strictObject({
     .max(Math.ceil(MAX_IMAGE_BYTES / 3) * 4)
     .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
 });
+
+export const MAX_AVATAR_BYTES = 256 * 1024;
+export const avatarInputSchema = imageInputSchema.extend({
+  base64: imageInputSchema.shape.base64.max(Math.ceil(MAX_AVATAR_BYTES / 3) * 4),
+});
+export const updateProfileRequestSchema = z.strictObject({
+  nickname: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .regex(/^[^\u0000-\u001f\u007f]*$/)
+    .nullable(),
+  bio: z.string().trim().max(160),
+  // Omitted retains the avatar; null removes it. Never accept client identity or remote URLs.
+  avatar: avatarInputSchema.nullable().optional(),
+});
+export const userProfileSchema = z.object({
+  userId: uuidSchema,
+  nickname: z.string().nullable(),
+  bio: z.string(),
+  avatarVersion: uuidSchema.nullable(),
+  identityProvider: z.enum(["WECHAT", "DEVELOPMENT", "NONE"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export const userAvatarSchema = z.object({
+  avatarVersion: uuidSchema.nullable(),
+  image: avatarInputSchema.nullable(),
+});
+export type UserProfile = z.infer<typeof userProfileSchema>;
+export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
+export type AvatarInput = z.infer<typeof avatarInputSchema>;
 const captureInputFields = {
   sourceChannel: z.enum(["MINIPROGRAM", "DEMO", "API"]).default("DEMO"),
   language: z.string().max(16).optional(),
@@ -578,6 +611,8 @@ export const lifeBrowseItemSchema = lifeListItemSchema.extend({
 export const lifeSearchRequestSchema = z
   .object({
     section: lifeSectionSchema.default("RECENT"),
+    scope: z.enum(["SECTION", "ALL_RECORDED"]).default("SECTION"),
+    query: z.string().trim().max(240).optional(),
     savedWithinDays: z.union([z.literal(7), z.literal(30), z.literal(90)]).optional(),
     kind: facetTypeSchema.optional(),
     location: z.enum(["ALL", "LOCATED", "UNLOCATED", "NEARBY"]).default("ALL"),
@@ -612,11 +647,162 @@ export type LifeBrowseItem = z.infer<typeof lifeBrowseItemSchema>;
 export type LifeSearchRequest = z.infer<typeof lifeSearchRequestSchema>;
 export type LifeSections = z.infer<typeof lifeSectionsResponseSchema>;
 export const captureListResponseSchema = z.array(captureResponseSchema);
+export const captureImageResponseSchema = z.object({ image: imageInputSchema.nullable() });
+export const recordExportRequestSchema = z.object({
+  cursor: z.string().min(1).max(512).optional(),
+});
+export const capturePageRequestSchema = recordExportRequestSchema;
+export const capturePageResponseSchema = z.object({
+  items: captureListResponseSchema,
+  nextCursor: z.string().nullable(),
+});
+export const recordExportPageSchema = z.object({
+  records: captureListResponseSchema,
+  nextCursor: z.string().nullable(),
+  exportedAt: z.iso.datetime(),
+});
 export const logoutResponseSchema = z.object({ loggedOut: z.literal(true) });
 export type AuthResponse = z.infer<typeof authResponseSchema>;
 export type LifeListItem = z.infer<typeof lifeListItemSchema>;
 export type CaptureResponse = z.infer<typeof captureResponseSchema>;
 export type NowResponse = z.infer<typeof nowResponseSchema>;
+
+export const lifeDetailResponseSchema = z
+  .object({
+    id: uuidSchema,
+    title: z.string(),
+    summary: z.string().nullable(),
+    kind: facetTypeSchema,
+    status: lifeStatusSchema,
+    objectVersion: z.number().int().positive(),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    myRating: z.enum(["LIKE", "DISLIKE", "NONE"]).default("NONE"),
+    facets: z.array(
+      z
+        .object({
+          id: uuidSchema,
+          facetType: facetTypeSchema,
+          facetKey: z.string(),
+          data: z.record(z.string(), z.unknown()),
+          confidence: z.number().min(0).max(1),
+        })
+        .passthrough(),
+    ),
+    sources: z.array(
+      z
+        .object({
+          id: uuidSchema,
+          sourceType: sourceTypeSchema,
+          sourceId: uuidSchema,
+          isPrimary: z.boolean(),
+          createdAt: z.iso.datetime(),
+        })
+        .passthrough(),
+    ),
+    verifiedDestination: z
+      .object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        coordinateSystem: z.literal("GCJ02"),
+        name: z.string().optional(),
+        address: z.string().optional(),
+      })
+      .nullable()
+      .optional(),
+    selectedDestination: z
+      .object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        coordinateSystem: z.literal("GCJ02"),
+        name: z.string(),
+        address: z.string(),
+        source: z.literal("USER_SELECTED_MAP"),
+      })
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type LifeDetailResponse = z.infer<typeof lifeDetailResponseSchema>;
+
+export const recommendationSettingsSchema = z.object({
+  relaxation: z.enum(["QUIET", "EXPLORE", "SOCIAL", "ANY"]).default("ANY"),
+  defaultMinutes: z
+    .union([z.literal(15), z.literal(30), z.literal(60), z.literal(120)])
+    .default(30),
+  // Yuan in the settings UI; converted to integer minor currency units for Now.
+  defaultBudget: z.number().min(0).max(1000000).nullable().default(null),
+  goingOut: z.enum(["YES", "NO", "UNKNOWN"]).default("UNKNOWN"),
+  homeRegion: z.string().trim().max(120).default(""),
+  frequentAreas: z.array(z.string().trim().min(1).max(120)).max(8).default([]),
+});
+export const privacySettingsSchema = z.object({ useLocation: z.boolean().default(false) });
+export const notificationSettingsSchema = z.object({ enabled: z.boolean().default(false) });
+export const userSettingsResponseSchema = z.object({
+  recommendation: recommendationSettingsSchema,
+  privacy: privacySettingsSchema,
+  notifications: notificationSettingsSchema,
+  onboardingCompleted: z.boolean(),
+  updatedAt: z.iso.datetime().nullable(),
+});
+export const patchUserSettingsRequestSchema = z
+  .strictObject({
+    // Defaults belong to complete saved settings; omitted PATCH fields must stay absent.
+    recommendation: z
+      .strictObject({
+        relaxation: recommendationSettingsSchema.shape.relaxation.removeDefault().optional(),
+        defaultMinutes: recommendationSettingsSchema.shape.defaultMinutes
+          .removeDefault()
+          .optional(),
+        defaultBudget: recommendationSettingsSchema.shape.defaultBudget.removeDefault().optional(),
+        goingOut: recommendationSettingsSchema.shape.goingOut.removeDefault().optional(),
+        homeRegion: recommendationSettingsSchema.shape.homeRegion.removeDefault().optional(),
+        frequentAreas: recommendationSettingsSchema.shape.frequentAreas.removeDefault().optional(),
+      })
+      .optional(),
+    privacy: z.strictObject({ useLocation: z.boolean().optional() }).optional(),
+    notifications: z.strictObject({ enabled: z.boolean().optional() }).optional(),
+    onboardingCompleted: z.boolean().optional(),
+  })
+  .refine((input) => Object.keys(input).length > 0, "Provide at least one change");
+export type UserSettingsResponse = z.infer<typeof userSettingsResponseSchema>;
+export type PatchUserSettingsRequest = z.infer<typeof patchUserSettingsRequestSchema>;
+
+export const captureArrangementRequestSchema = z
+  .strictObject({
+    captureId: uuidSchema,
+    scheduledFor: z.iso.datetime().optional(),
+    ticketLifeObjectId: uuidSchema.optional(),
+  })
+  .refine(
+    (input) => Boolean(input.scheduledFor || input.ticketLifeObjectId),
+    "Provide a schedule or ticket",
+  );
+export const nearbyDiscoveryRequestSchema = z.strictObject({
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  coordinateSystem: z.literal("GCJ02"),
+  radiusMeters: z.coerce.number().int().min(100).max(10000),
+});
+
+const uiCapabilitySchema = z.object({
+  available: z.boolean(),
+  reason: z.enum(["AVAILABLE", "NOT_INTEGRATED"]),
+});
+export const uiCapabilitiesResponseSchema = z.object({
+  ticketVerification: uiCapabilitySchema,
+  reminderDelivery: uiCapabilitySchema,
+  mediaArchive: uiCapabilitySchema,
+  recordExport: uiCapabilitySchema,
+});
+export const ticketVerificationRequestSchema = z.strictObject({
+  lifeObjectId: uuidSchema,
+  storeQuery: z.string().trim().min(1).max(240).optional(),
+});
+export const reminderSubscriptionRequestSchema = z.strictObject({
+  lifeObjectId: uuidSchema,
+  remindAt: z.iso.datetime(),
+});
 
 export const patchLifeObjectRequestSchema = z
   .object({

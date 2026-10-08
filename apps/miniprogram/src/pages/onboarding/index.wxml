@@ -1,0 +1,39 @@
+<view class="screen" style="padding-top: {{topInset}}px; padding-bottom: {{bottomInset}}px;">
+  <view class="topbar"><text class="step-label">{{step + 1}} / 4</text><button class="skip" bindtap="skip" disabled="{{busy}}">暂时跳过</button></view>
+  <scroll-view class="content" scroll-y>
+    <view class="page-body">
+      <view class="intro"><text class="headline">{{step === 0 ? '此刻，怎么称呼你？' : step === 1 ? '你喜欢怎样放松？' : step === 2 ? '通常留多少时间？' : '地点与心情，由你决定'}}</text><text class="copy">{{step === 0 ? '昵称选填。头像和简介可以稍后在个人资料中添加。' : step === 1 ? '挑一个接近你的日常节奏，也可以暂不设偏好。' : step === 2 ? '这是建议的起点，每次都可以调整。' : '区域只保存为文字；位置仅在你主动核对路程时使用。'}}</text></view>
+      <view wx:if="{{step === 0}}" class="choice-list">
+        <view class="region-entry"><text class="region-label">昵称（可选）</text><input class="region-input" type="nickname" value="{{nickname}}" bindinput="editNickname" bindblur="editNickname" maxlength="32" placeholder="填写你喜欢的称呼" disabled="{{busy || !loaded}}" /></view>
+        <text class="copy">用同一微信登录，可以继续使用自己的资料和生活记录。所有问题都可以稍后在设置中修改。</text>
+      </view>
+      <view wx:if="{{step === 1}}" class="choice-list">
+        <button class="choice {{relaxation === 'QUIET' ? 'selected' : ''}}" data-field="relaxation" data-value="QUIET" bindtap="select">在附近散步，安静吹吹风</button>
+        <button class="choice {{relaxation === 'EXPLORE' ? 'selected' : ''}}" data-field="relaxation" data-value="EXPLORE" bindtap="select">去咖啡馆、书店或展馆看看</button>
+        <button class="choice {{relaxation === 'SOCIAL' ? 'selected' : ''}}" data-field="relaxation" data-value="SOCIAL" bindtap="select">和朋友吃饭、聊天</button>
+        <button class="choice {{relaxation === 'ANY' ? 'selected' : ''}}" data-field="relaxation" data-value="ANY" bindtap="select">暂时不设偏好</button>
+      </view>
+      <view wx:if="{{step === 2}}" class="choice-list">
+        <button class="choice {{defaultMinutes === 15 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="15" bindtap="select">15 分钟</button>
+        <button class="choice {{defaultMinutes === 30 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="30" bindtap="select">半小时</button>
+        <button class="choice {{defaultMinutes === 60 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="60" bindtap="select">1 小时</button>
+        <button class="choice {{defaultMinutes === 120 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="120" bindtap="select">2 小时</button>
+        <view class="budget-group"><text class="section-title">出门预算</text><view class="budget-options">
+          <button class="budget {{defaultBudget === 50 ? 'selected' : ''}}" data-field="defaultBudget" data-value="50" bindtap="select">50 元内</button>
+          <button class="budget {{defaultBudget === 100 ? 'selected' : ''}}" data-field="defaultBudget" data-value="100" bindtap="select">100 元内</button>
+          <button class="budget {{defaultBudget === null ? 'selected' : ''}}" data-field="defaultBudget" data-value="null" bindtap="select">不设预算</button>
+        </view></view>
+      </view>
+      <view wx:if="{{step === 3}}" class="choice-list">
+        <button class="choice {{goingOut === 'YES' ? 'selected' : ''}}" data-field="goingOut" data-value="YES" bindtap="select">愿意出门走走</button>
+        <button class="choice {{goingOut === 'NO' ? 'selected' : ''}}" data-field="goingOut" data-value="NO" bindtap="select">想在家休息</button>
+        <button class="choice {{goingOut === 'UNKNOWN' ? 'selected' : ''}}" data-field="goingOut" data-value="UNKNOWN" bindtap="select">每次再决定</button>
+        <button class="choice location-choice {{useLocation ? 'selected' : ''}}" data-field="useLocation" data-value="{{!useLocation}}" bindtap="select"><text class="choice-title">{{useLocation ? '允许核对路程时使用当前位置' : '暂不使用当前位置'}}</text><text class="choice-note">不会自动读取位置；你主动核对路程时才会获取</text></button>
+        <view class="region-entry"><text class="region-label">常住区域（可选）</text><input class="region-input" value="{{homeRegion}}" bindinput="editRegion" maxlength="120" placeholder="填写城市或片区，无需详细住址" disabled="{{busy || !loaded}}" /></view>
+      </view>
+      <button wx:if="{{error && !loaded}}" class="retry" bindtap="loadDraft" loading="{{loading}}" disabled="{{loading}}">重新读取</button>
+      <text wx:if="{{error}}" class="error">{{error}}</text>
+      <view class="actions"><button wx:if="{{step > 0}}" class="back" bindtap="previous" disabled="{{busy}}">上一步</button><button class="next" bindtap="next" loading="{{busy}}" disabled="{{busy || !loaded}}">{{step === 3 ? '保存并开始使用' : '继续'}}</button></view>
+    </view>
+  </scroll-view>
+</view>

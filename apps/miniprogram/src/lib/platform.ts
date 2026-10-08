@@ -4,8 +4,10 @@ export const wxPlatform: ClientPlatform = {
   send: ({ url, method, data, headers }) =>
     new Promise((resolve, reject) => {
       wx.request({
-        url,
-        method,
+        // wx.request does not expose PATCH. The API supplies POST update aliases
+        // with the same validation, owner checks and idempotency operation.
+        url: method === "PATCH" ? url + "/update" : url,
+        method: method === "PATCH" ? "POST" : method,
         data: data as WechatMiniprogram.IAnyObject,
         header: headers,
         timeout: 15000,

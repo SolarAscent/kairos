@@ -73,6 +73,14 @@ describe("contracts and model boundary", () => {
   it("rejects invented provider names", () => {
     expect(() => createModelGateway({ MODEL_PROVIDER: "typo" })).toThrow("MODEL_PROVIDER_INVALID");
   });
+  it("forbids simulated recommendations for production users", () => {
+    expect(() => createModelGateway({ MODEL_PROVIDER: "mock", NODE_ENV: "production" })).toThrow(
+      "MOCK_MODEL_FORBIDDEN_IN_PRODUCTION",
+    );
+    expect(createModelGateway({ MODEL_PROVIDER: "mock", NODE_ENV: "test" })).toBeInstanceOf(
+      MockModelProvider,
+    );
+  });
   it("rejects dangling relations and fabricated verification", async () => {
     const result = await new MockModelProvider().parseCapture("我想去书店");
     expect(

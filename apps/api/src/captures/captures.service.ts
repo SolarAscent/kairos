@@ -4,7 +4,8 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { captures, captureAssets, outboxEvents, type Database } from "@life/db";
-import type { CreateCaptureRequest } from "@life/contracts";
+import { imageInputSchema, uuidSchema, type CreateCaptureRequest } from "@life/contracts";
+import { z } from "zod";
 import { DATABASE } from "../common/tokens.js";
 import { IdempotencyService } from "../common/idempotency.service.js";
 
@@ -129,5 +130,90 @@ export class CapturesService {
       .limit(1);
     if (!capture) throw new NotFoundException({ code: "CAPTURE_NOT_FOUND" });
     return capture;
+  }
+
+  async image(userId: string, captureId: string) {
+    await this.get(userId, captureId);
+    const [asset] = await this.db
+      .select()
+      .from(captureAssets)
+      .where(
+        and(
+          eq(captureAssets.userId, userId),
+          eq(captureAssets.captureId, captureId),
+          eq(captureAssets.assetType, "IMAGE"),
+          isNull(captureAssets.deletedAt),
+        ),
+      )
+      .orderBy(desc(captureAssets.createdAt))
+      .limit(1);
+    if (!asset || (asset.retainUntil && asset.retainUntil <= new Date())) return { image: null };
+    const match = /^data:(image\/(?:jpeg|png));base64,(.+)$/.exec(asset.storageKey);
+    if (!match || match[1] !== asset.mimeType) return { image: null };
+    const image = imageInputSchema.safeParse({ mimeType: match[1], base64: match[2] });
+    return { image: image.success ? image.data : null };
+  }
+
+  async exportPage(userId: string, cursorInput?: string) {
+    return this.snapshotPage(userId, cursorInput, 200, "INVALID_EXPORT_CURSOR");
+  }
+
+  async page(userId: string, cursorInput?: string) {
+    const result = await this.snapshotPage(userId, cursorInput, 50, "INVALID_CAPTURE_CURSOR");
+    return { items: result.records, nextCursor: result.nextCursor };
+  }
+
+  private async snapshotPage(
+    userId: string,
+    cursorInput: string | undefined,
+    pageSize: number,
+    invalidCursorCode: string,
+  ) {
+    const cursorSchema = z.object({
+      asOf: z.iso.datetime(),
+      createdAt: z.iso.datetime(),
+      id: uuidSchema,
+    });
+    let cursor: z.infer<typeof cursorSchema> | undefined;
+    if (cursorInput) {
+      try {
+        cursor = cursorSchema.parse(
+          JSON.parse(Buffer.from(cursorInput, "base64url").toString("utf8")),
+        );
+      } catch {
+        throw new BadRequestException({ code: invalidCursorCode });
+      }
+    }
+    const asOf = cursor?.asOf ?? new Date().toISOString();
+    const filters = [
+      eq(captures.userId, userId),
+      isNull(captures.deletedAt),
+      sql`${captures.createdAt} <= ${asOf}::timestamptz`,
+    ];
+    if (cursor)
+      filters.push(
+        sql`(${captures.createdAt}, ${captures.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`,
+      );
+    const rows = await this.db
+      .select({
+        ...captureFields,
+        cursorCreatedAt: sql<string>`to_char(${captures.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(captures)
+      .where(and(...filters))
+      .orderBy(desc(captures.createdAt), desc(captures.id))
+      .limit(pageSize + 1);
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    return {
+      records: page.map(({ cursorCreatedAt: _cursor, ...record }) => record),
+      exportedAt: asOf,
+      nextCursor:
+        rows.length > pageSize && last
+          ? Buffer.from(
+              JSON.stringify({ asOf, createdAt: last.cursorCreatedAt, id: last.id }),
+            ).toString("base64url")
+          : null,
+    };
   }
 }

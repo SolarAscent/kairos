@@ -39,6 +39,10 @@ export async function chooseCaptureImage(): Promise<CaptureImage | null> {
       fail: () => reject(new ClientError("IMAGE_READ_FAILED")),
     });
   });
+  const bytes =
+    Math.floor((base64.length * 3) / 4) -
+    (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+  if (bytes > 2 * 1024 * 1024) throw new ClientError("IMAGE_TOO_LARGE");
   const mimeType = base64.startsWith("/9j/")
     ? "image/jpeg"
     : base64.startsWith("iVBORw0KGgo")

@@ -2,17 +2,31 @@ import { observable, action } from "mobx-miniprogram";
 import { ApiClient } from "./client";
 import { wxPlatform } from "./platform";
 import { createRouteCache } from "./route-cache";
+import { ProfileClient } from "./profile";
+import type { UserProfile } from "@life/contracts";
 
 export function createSessionServices() {
   const routeCache = createRouteCache();
+  let profiles: ProfileClient | undefined;
   const sessionStore = observable({
     userId: "",
+    nickname: "",
+    avatarPath: "",
     setUser: action(function (id: string | null) {
-      if (sessionStore.userId !== (id ?? "")) routeCache.clear();
+      if (sessionStore.userId !== (id ?? "")) {
+        routeCache.clear();
+        profiles?.clear();
+        sessionStore.nickname = sessionStore.avatarPath = "";
+      }
       sessionStore.userId = id ?? "";
+    }),
+    setProfile: action(function (profile: UserProfile | null, path: string) {
+      sessionStore.nickname = profile?.nickname ?? "";
+      sessionStore.avatarPath = path;
     }),
   });
   const client = new ApiClient(__MINIPROGRAM_CONFIG__, wxPlatform, sessionStore.setUser);
-  return { client, sessionStore, routeCache };
+  profiles = new ProfileClient(client, sessionStore.setProfile);
+  return { client, sessionStore, routeCache, profiles };
 }
 export type AppServices = ReturnType<typeof createSessionServices>;

@@ -3,7 +3,7 @@ import { createStoreBindings } from "mobx-miniprogram-bindings";
 import { reaction } from "mobx-miniprogram";
 import {
   captureAcceptedSchema,
-  captureListResponseSchema,
+  capturePageResponseSchema,
   createCaptureRequestSchema,
   createFeedbackRequestSchema,
   createNowSessionRequestSchema,
@@ -22,6 +22,8 @@ import {
   locationPickerIntentResponseSchema,
   locationMapSelectRequestSchema,
   locationMapSelectResponseSchema,
+  lifeDetailResponseSchema,
+  userSettingsResponseSchema,
   type CaptureResponse,
   type LifeSections,
   type NowContext,
@@ -38,7 +40,13 @@ import {
   VoiceCapture,
   type CaptureImage,
 } from "../../lib/media";
-import { createLifeStack, type LifeStack } from "../../lib/life";
+import { createLifeStack, kindOptions, type LifeStack } from "../../lib/life";
+import {
+  getCaptureImageCacheEpoch,
+  isCaptureImageCachePath,
+  readCaptureImage,
+} from "../../lib/capture-image";
+import { getAppearance } from "../../lib/appearance";
 const { client, sessionStore, routeCache } = getApp<{ globalData: AppServices }>().globalData;
 
 type Pending = { signature: string; key: string };
@@ -73,7 +81,7 @@ function pickerMessage(error: unknown) {
   const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
   if (/LOCATION_.*(?:EXPIRED|INVALID)/.test(code))
     return "这次地点选择已失效，请重新打开微信地图选择。";
-  if (code === "LOCATION_OBJECT_CHANGED") return "这条心愿已更新，请重新选择地点。";
+  if (code === "LOCATION_OBJECT_CHANGED") return "这条记录已更新，请重新选择地点。";
   const message =
     error && typeof error === "object" && "errMsg" in error
       ? String(error.errMsg).toLowerCase()
@@ -95,7 +103,7 @@ function locationChoiceMessage(error: unknown) {
       {
         LOCATION_CHOICES_EXPIRED: "地点选项已过期，请重新核对地点后再选。",
         LOCATION_CHOICE_INVALID: "这个地点选项已失效，请重新核对地点后再选。",
-        LOCATION_OBJECT_CHANGED: "这条心愿已更新，请重新核对地点后再选。",
+        LOCATION_OBJECT_CHANGED: "这条记录已更新，请重新核对地点后再选。",
       } as Record<string, string>
     )[code] ?? userMessage(error)
   );
@@ -107,11 +115,26 @@ type HomeCard = {
   phase: string;
   imagePath: string;
   statusLabel: string;
+  savedDate?: string;
+  original?: string;
 };
+type HomeSections = (Omit<LifeSections[number], "items"> & {
+  items: (LifeSections[number]["items"][number] & { kindLabel: string })[];
+})[];
+function savedDateLabel(iso: string) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 function captureCard(item: CaptureResponse, imagePath = ""): HomeCard {
+  const firstLine = (item.text ?? "").trim().split(/[\r\n]/, 1)[0] ?? "";
+  const characters = [...firstLine];
+  const textTitle = characters.slice(0, 48).join("") + (characters.length > 48 ? "…" : "");
   return {
     id: item.id,
-    title: item.title || (item.type === "IMAGE" ? "留下一张图片" : "留下一个念头"),
+    title:
+      item.title?.trim() || textTitle || (item.type === "IMAGE" ? "留下一张图片" : "留下一个念头"),
+    original: item.text ?? "",
     summary:
       item.summary ||
       (["UPLOADED", "PROCESSING"].includes(item.status)
@@ -122,13 +145,14 @@ function captureCard(item: CaptureResponse, imagePath = ""): HomeCard {
     phase: item.status,
     imagePath,
     statusLabel: statusLabels[item.status] ?? "已收纳",
+    savedDate: savedDateLabel(item.createdAt),
   };
 }
 const statusLabels: Record<string, string> = {
   UPLOADED: "已收纳",
   PROCESSING: "在慢慢整理",
   READY: "已收纳",
-  NEEDS_REVIEW: "已收纳",
+  NEEDS_REVIEW: "等待核对",
   FAILED: "理解未完成，原文已保留",
 };
 function needsRouteLocation(result: NowResponse) {
@@ -157,6 +181,10 @@ function createRuntime() {
     pollCount: 0,
     capturePending: null as Pending | null,
     nowPending: null as Pending | null,
+    nextDecisionContext: null as Pick<
+      NowContext,
+      "availableMinutes" | "budgetMinor" | "willingToGoOut"
+    > | null,
     requestLocation: null as NowContext["location"] | null,
     locationGeneration: 0,
     choiceEpoch: 0,
@@ -172,8 +200,21 @@ function createRuntime() {
     exclusions: [] as string[],
     lastUser: client.userId ?? "",
     loadingLists: false,
+    listGeneration: 0,
+    captureCursor: null as string | null,
+    operationEpoch: 0,
+    detailReturn: false,
+    feedbackReceipt: null as {
+      owner: string;
+      sessionId: string;
+      target: string;
+      eventType: "ACCEPT" | "SKIP" | "COMPLETE" | "REJECT";
+      recommendation: NonNullable<NowResponse["recommendation"]>;
+      result: ReturnType<typeof feedbackAcceptedSchema.parse>;
+    } | null,
     mediaGeneration: 0,
     image: null as CaptureImage | null,
+    imagePickerOpen: false,
     voice: null as VoiceCapture | null,
     voiceLines: [] as string[],
     voiceBaseDraft: "",
@@ -186,6 +227,12 @@ function createRuntime() {
     answerPending: null as Pending | null,
     voiceSessionId: "",
     voiceFade: undefined as ReturnType<typeof setTimeout> | undefined,
+    onboardingCheckedUser: "",
+    onboardingFlight: false,
+    pictureGeneration: 0,
+    pictureCacheEpoch: getCaptureImageCacheEpoch(),
+    pictureCache: new Map<string, Awaited<ReturnType<typeof readCaptureImage>>>(),
+    pictureFlights: new Map<string, ReturnType<typeof readCaptureImage>>(),
     lifeGeneration: 0,
     lifeStackFlight: null as number | null,
     ratingPending: new Map<string, Pending>(),
@@ -198,13 +245,23 @@ function createRuntime() {
 function createData() {
   return {
     userId: "",
+    reduceMotion: false,
     tab: "now",
+    conditionsSheet: false,
+    routeSheet: false,
+    locationSheet: false,
+    conditionGoingOut: "any",
+    conditionMinutes: "any",
+    conditionBudget: "any",
+    captureReview: null as (HomeCard & { original: string }) | null,
+    recommendationImage: "",
     topInset: 60,
     bottomInset: 24,
     sheet: false,
     inputMode: "menu",
     imagePath: "",
     imageLoading: false,
+    capturePermission: "" as "" | "scope.record" | "image",
     voiceStatus: "idle",
     voiceLevel: 0,
     waveBars: [0.35, 0.7, 1, 0.55, 0.9, 0.4, 0.75, 1, 0.5, 0.8, 0.4],
@@ -214,13 +271,17 @@ function createData() {
     voiceCancelGesture: false,
     voiceHolding: false,
     cards: [] as HomeCard[],
+    capturesHasMore: false,
+    capturesLoading: false,
+    capturesMoreError: "",
     question: null as NowResponse["question"],
     draft: "",
     notice: "",
     error: "",
     busy: false,
-    loginLabel: __MINIPROGRAM_CONFIG__.loginMode === "mock" ? "开发模式登录" : "微信登录",
-    sections: [] as LifeSections,
+    loginLabel: __MINIPROGRAM_CONFIG__.loginMode === "mock" ? "开发模式登录" : "微信登录并开始使用",
+    onboardingError: "",
+    sections: [] as HomeSections,
     captures: [] as (CaptureResponse & { statusLabel: string })[],
     lifeCaptures: [] as (CaptureResponse & { statusLabel: string })[],
     recommendation: null as NowResponse["recommendation"],
@@ -249,7 +310,7 @@ function createData() {
 
 Page({
   data: createData(),
-  runtime: createRuntime(),
+  runtime: null as unknown as ReturnType<typeof createRuntime>,
   updateData(values: Partial<ReturnType<typeof createData>>) {
     if (this.runtime.unloaded) return;
     if ("recommendation" in values) {
@@ -257,6 +318,7 @@ Page({
       const cached = routeCache.get(client.userId, target);
       const sameTarget = target === this.data.recommendation?.targetLifeObjectId;
       if (!sameTarget) {
+        this.setData({ recommendationImage: "" });
         this.clearMapPicker();
         this.setData({ mapDestination: null, hasConfirmedDestination: false });
         this.clearLocationChoices();
@@ -270,7 +332,148 @@ Page({
           values.recommendation?.progress?.state !== "ACTIVE" &&
           ((values.canVerifyRoute ?? (sameTarget && this.data.canVerifyRoute)) || !!cached),
       });
+      if (target && !sameTarget) void this.loadRecommendationImage(target);
     } else this.setData(values);
+  },
+  clearPictures() {
+    const state = this.runtime;
+    state.pictureGeneration++;
+    state.pictureCache.forEach((picture) => picture?.dispose());
+    state.pictureCache.clear();
+    state.pictureFlights.clear();
+    state.pictureCacheEpoch = getCaptureImageCacheEpoch();
+  },
+  invalidateClearedPictures() {
+    const state = this.runtime;
+    if (state.pictureCacheEpoch === getCaptureImageCacheEpoch()) return false;
+    this.clearPictures();
+    this.updateData({
+      recommendationImage: "",
+      cards: this.data.cards.map((card) => ({
+        ...card,
+        imagePath: isCaptureImageCachePath(card.imagePath) ? "" : card.imagePath,
+      })),
+      captureReview: this.data.captureReview
+        ? {
+            ...this.data.captureReview,
+            imagePath: isCaptureImageCachePath(this.data.captureReview.imagePath)
+              ? ""
+              : this.data.captureReview.imagePath,
+          }
+        : null,
+    });
+    return true;
+  },
+  async restoreReviewImage() {
+    const state = this.runtime;
+    const review = this.data.captureReview;
+    if (!review || review.imagePath) return;
+    const capture = this.data.captures.find((item) => item.id === review.id);
+    if (capture?.type !== "IMAGE") return;
+    const generation = state.pictureGeneration;
+    const owner = client.userId;
+    try {
+      const picture = await this.readHomeCaptureImage(review.id);
+      if (
+        picture &&
+        !state.unloaded &&
+        generation === state.pictureGeneration &&
+        owner === client.userId &&
+        state.pictureCacheEpoch === getCaptureImageCacheEpoch() &&
+        this.data.captureReview?.id === review.id
+      )
+        this.updateData({ captureReview: { ...this.data.captureReview, imagePath: picture.path } });
+    } catch {
+      // Original text remains available if its optional image cannot be restored.
+    }
+  },
+  async readHomeCaptureImage(id: string) {
+    this.invalidateClearedPictures();
+    const state = this.runtime;
+    const owner = client.userId;
+    const generation = state.pictureGeneration;
+    if (!owner || state.unloaded) return null;
+    if (state.pictureCache.has(id)) return state.pictureCache.get(id) ?? null;
+    const existing = state.pictureFlights.get(id);
+    if (existing) return existing;
+    const flight = readCaptureImage(client, id).then((picture) => {
+      if (
+        state.unloaded ||
+        state.pictureGeneration !== generation ||
+        client.userId !== owner ||
+        state.pictureCacheEpoch !== getCaptureImageCacheEpoch()
+      ) {
+        picture?.dispose();
+        return null;
+      }
+      state.pictureCache.set(id, picture);
+      return picture;
+    });
+    state.pictureFlights.set(id, flight);
+    try {
+      return await flight;
+    } finally {
+      if (state.pictureFlights.get(id) === flight) state.pictureFlights.delete(id);
+    }
+  },
+  async loadRecommendationImage(target: string) {
+    this.invalidateClearedPictures();
+    const state = this.runtime;
+    const owner = client.userId;
+    const generation = state.pictureGeneration;
+    const isCurrent = () =>
+      !state.unloaded &&
+      owner === client.userId &&
+      generation === state.pictureGeneration &&
+      state.pictureCacheEpoch === getCaptureImageCacheEpoch() &&
+      target === this.data.recommendation?.targetLifeObjectId;
+    try {
+      const detail = await client.request(`/v1/life/${target}`, lifeDetailResponseSchema);
+      if (!isCurrent()) return;
+      const sources = detail.sources.filter((source) => source.sourceType === "CAPTURE");
+      sources.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
+      for (const source of sources.slice(0, 3)) {
+        const image = await this.readHomeCaptureImage(source.sourceId);
+        if (!isCurrent()) return;
+        if (image) {
+          this.updateData({ recommendationImage: image.path });
+          return;
+        }
+      }
+    } catch {
+      // Source images are optional; recommendations remain readable if unavailable.
+    }
+  },
+  async loadJournalImages() {
+    this.invalidateClearedPictures();
+    const state = this.runtime;
+    const owner = client.userId;
+    const generation = state.pictureGeneration;
+    const captures = this.data.captures.filter((capture) => capture.type === "IMAGE").slice(0, 12);
+    for (const capture of captures) {
+      if (state.unloaded || client.userId !== owner || state.pictureGeneration !== generation)
+        return;
+      const card = this.data.cards.find((item) => item.id === capture.id);
+      if (card?.imagePath) continue;
+      try {
+        const picture = await this.readHomeCaptureImage(capture.id);
+        if (
+          state.unloaded ||
+          client.userId !== owner ||
+          state.pictureGeneration !== generation ||
+          state.pictureCacheEpoch !== getCaptureImageCacheEpoch()
+        )
+          return;
+        if (picture)
+          this.updateData({
+            cards: this.data.cards.map((item) =>
+              item.id === capture.id ? { ...item, imagePath: picture.path } : item,
+            ),
+          });
+      } catch {
+        // Keep the original text and status when a historic image cannot be read.
+      }
+    }
   },
   restoreRouteView() {
     const cached = routeCache.get(client.userId, this.data.recommendation?.targetLifeObjectId);
@@ -312,6 +515,12 @@ Page({
   },
   resetSessionContent() {
     const state = this.runtime;
+    state.operationEpoch++;
+    state.listGeneration++;
+    state.captureCursor = null;
+    state.feedbackReceipt = null;
+    state.detailReturn = false;
+    state.loadingLists = false;
     this.clearMapPicker();
     this.clearRequestLocation();
     state.lifeGeneration++;
@@ -321,9 +530,11 @@ Page({
     state.deletePending = null;
     state.deleteFlight = null;
     this.cleanupMedia();
+    this.clearPictures();
     state.image = null;
     state.voiceSessionId = "";
     state.capturePending = state.nowPending = state.feedbackPending = null;
+    state.nextDecisionContext = null;
     state.exclusions = [];
     state.pendingDecisionCaptureId = "";
     if (state.decisionRefresh) clearTimeout(state.decisionRefresh);
@@ -331,6 +542,10 @@ Page({
     state.localCaptureId = state.voiceCardId = "";
     this.updateData({
       draft: "",
+      busy: false,
+      capturesHasMore: false,
+      capturesLoading: false,
+      capturesMoreError: "",
       notice: "",
       sections: [],
       captures: [],
@@ -339,7 +554,13 @@ Page({
       sessionId: "",
       decided: false,
       sheet: false,
+      conditionsSheet: false,
+      routeSheet: false,
+      locationSheet: false,
+      captureReview: null,
+      recommendationImage: "",
       inputMode: "menu",
+      capturePermission: "",
       imagePath: "",
       imageLoading: false,
       voiceStatus: "idle",
@@ -360,12 +581,15 @@ Page({
       voiceCancelGesture: false,
     });
   },
-  onLoad() {
+  onLoad(options: Record<string, string | undefined> = {}) {
     this.runtime = createRuntime();
     const state = this.runtime;
     const info = wx.getWindowInfo();
     const menu = wx.getMenuButtonBoundingClientRect();
     this.updateData({
+      ...(options.tab && ["now", "life", "journal"].includes(options.tab)
+        ? { tab: options.tab }
+        : {}),
       topInset: Math.max(menu.bottom + 16, info.statusBarHeight + 44),
       bottomInset: Math.max(16, info.screenHeight - (info.safeArea?.bottom ?? info.screenHeight)),
     });
@@ -378,14 +602,10 @@ Page({
     state.pickerIdentityDispose = reaction(
       () => sessionStore.userId,
       () => {
-        this.clearMapPicker();
-        this.clearRequestLocation();
-        this.updateData({
-          routeView: null,
-          departureReason: "",
-          mapDestination: null,
-          hasConfirmedDestination: false,
-        });
+        this.resetSessionContent();
+        state.lastUser = client.userId ?? "";
+        this.updateData({ reduceMotion: getAppearance(client).reduceMotion });
+        if (!client.userId) this.updateData({ busy: false });
       },
     );
   },
@@ -393,19 +613,69 @@ Page({
     const state = this.runtime;
     state.visible = true;
     state.pollCount = 0;
+    this.updateData({ reduceMotion: getAppearance(client).reduceMotion });
     if (state.lastUser !== (client.userId ?? "")) {
       this.resetSessionContent();
       state.lastUser = client.userId ?? "";
     }
+    const imagesCleared = this.invalidateClearedPictures();
     this.restoreRouteView();
     if (client.userId) {
+      void this.checkOnboarding();
+      if (imagesCleared) {
+        const target = this.data.recommendation?.targetLifeObjectId;
+        if (target) void this.loadRecommendationImage(target);
+        void this.loadJournalImages();
+        void this.restoreReviewImage();
+      }
       void this.refreshLists();
-      void this.restoreActivePlan();
+      if (state.feedbackReceipt) void this.consumeFeedbackReceipt();
+      else if (state.detailReturn && this.data.sessionId) void this.refreshCurrentSession();
+      else void this.restoreActivePlan();
       if (this.data.tab === "life") void this.loadLifeStacks(true);
       if (state.deletePending || state.deleteFlight) void this.reconcileWishAfterReturn();
+      state.detailReturn = false;
+    }
+  },
+  async refreshCurrentSession() {
+    const state = this.runtime;
+    const owner = client.userId;
+    const sessionId = this.data.sessionId;
+    const operation = state.operationEpoch;
+    if (!owner || !sessionId || this.data.busy || state.unloaded) return;
+    const isCurrent = () =>
+      !state.unloaded &&
+      state.visible &&
+      client.userId === owner &&
+      operation === state.operationEpoch &&
+      !this.data.busy &&
+      sessionId === this.data.sessionId;
+    try {
+      const current = await client.request(`/v1/now/sessions/${sessionId}`, nowResponseSchema);
+      if (!isCurrent()) return;
+      const progress = current.recommendation?.progress?.state;
+      if (
+        progress === "COMPLETED" ||
+        progress === "CANCELLED" ||
+        (!current.recommendation && !current.question)
+      ) {
+        if (wx.getStorageSync(`${client.storageKey}:active:${owner}`) === sessionId)
+          wx.removeStorageSync(`${client.storageKey}:active:${owner}`);
+        this.updateData({
+          recommendation: null,
+          question: null,
+          sessionId: "",
+          decided: false,
+          canVerifyRoute: false,
+        });
+      } else this.applyNow(current);
+    } catch {
+      if (isCurrent()) this.updateData({ error: "暂时无法更新这次建议，请重试。" });
     }
   },
   async restoreActivePlan() {
+    const state = this.runtime;
+    const operation = state.operationEpoch;
     const owner = client.userId;
     if (!owner || this.data.busy || this.data.sessionId) return;
     const key = `${client.storageKey}:active:${owner}`;
@@ -413,7 +683,14 @@ Page({
     if (typeof sessionId !== "string" || !/^[0-9a-f-]{36}$/i.test(sessionId)) return;
     try {
       const result = await client.request(`/v1/now/sessions/${sessionId}`, nowResponseSchema);
-      if (this.runtime.unloaded || client.userId !== owner) return;
+      if (
+        state.unloaded ||
+        client.userId !== owner ||
+        operation !== state.operationEpoch ||
+        this.data.sessionId ||
+        this.data.busy
+      )
+        return;
       if (result.recommendation?.progress?.state === "ACTIVE") {
         this.applyNow(result);
         this.updateData({ canVerifyRoute: false });
@@ -425,6 +702,8 @@ Page({
   onHide() {
     const state = this.runtime;
     state.visible = false;
+    state.operationEpoch++;
+    this.updateData({ busy: false });
     if (state.pickerContext && !state.pickerContext.nativeOpen && !state.pickerContext.picked)
       this.clearMapPicker();
     state.lifeGeneration++;
@@ -441,7 +720,8 @@ Page({
       this.updateData({ mapPickerBusy: false, busy: false });
     }
     this.clearRequestLocation();
-    this.cleanupMedia();
+    // Camera/album pickers may hide the page; their explicit selection remains valid.
+    if (!state.imagePickerOpen) this.cleanupMedia();
     if (state.poll) clearTimeout(state.poll);
     if (state.decisionRefresh) clearTimeout(state.decisionRefresh);
   },
@@ -452,6 +732,7 @@ Page({
     this.clearMapPicker();
     this.clearRequestLocation();
     this.cleanupMedia();
+    this.clearPictures();
     state.unloaded = true;
     state.visible = false;
     state.lifeGeneration++;
@@ -476,6 +757,37 @@ Page({
     } finally {
       this.updateData({ busy: false });
     }
+    if (client.userId) void this.checkOnboarding();
+  },
+  async checkOnboarding() {
+    const state = this.runtime;
+    const owner = client.userId;
+    if (!owner || state.onboardingCheckedUser === owner || state.onboardingFlight) return;
+    state.onboardingFlight = true;
+    try {
+      const settings = await client.request("/v1/settings", userSettingsResponseSchema);
+      if (state.unloaded || !state.visible || client.userId !== owner) return;
+      state.onboardingCheckedUser = owner;
+      this.updateData({ onboardingError: "" });
+      if (!settings.onboardingCompleted)
+        wx.navigateTo({
+          url: "/pages/onboarding/index",
+          fail: () => {
+            state.onboardingCheckedUser = "";
+            this.updateData({ onboardingError: "暂时无法打开首次设定，请重试。" });
+          },
+        });
+    } catch {
+      if (!state.unloaded && state.visible && client.userId === owner)
+        this.updateData({ onboardingError: "首次设定暂时未能读取，可以重试或稍后在设置中填写。" });
+    } finally {
+      state.onboardingFlight = false;
+    }
+  },
+  openPrivacy() {
+    wx.openPrivacyContract({
+      fail: () => this.updateData({ error: "暂时无法打开隐私说明，请稍后重试。" }),
+    });
   },
   async signOut() {
     const state = this.runtime;
@@ -495,7 +807,10 @@ Page({
   },
   switchTab(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;
-    this.updateData({ tab: event.currentTarget.dataset.tab });
+    const tab = event.currentTarget.dataset.tab;
+    if (!["now", "journal", "life"].includes(tab)) return;
+    this.updateData({ tab });
+    if (client.userId && tab === "journal") void this.refreshLists();
     if (client.userId && this.data.tab === "life") {
       state.pollCount = 0;
       void this.refreshLists();
@@ -617,16 +932,128 @@ Page({
     wx.navigateTo({ url: `/pages/life-list/index?kind=${kind}` });
   },
   viewLifeItem(event: WechatMiniprogram.TouchEvent) {
-    const item = this.data.lifeStacks
-      .flatMap((group) => group.items)
-      .find((item) => item.id === event.currentTarget.dataset.id);
-    if (item)
-      wx.showModal({
-        title: item.title,
-        content: item.summary || item.title,
-        showCancel: false,
-        confirmText: "收起",
-      });
+    const id = event.currentTarget.dataset.id;
+    if (!/^[0-9a-f-]{36}$/i.test(id ?? "")) return;
+    this.runtime.detailReturn = true;
+    wx.navigateTo({
+      url: `/pages/life-detail/index?id=${id}`,
+      fail: () => this.updateData({ error: "暂时无法打开详情，请重试。" }),
+    });
+  },
+  openSettings() {
+    wx.navigateTo({ url: "/pages/settings/index" });
+  },
+  openSearch() {
+    wx.navigateTo({ url: "/pages/life-list/index?mode=search" });
+  },
+  openNearby() {
+    wx.navigateTo({ url: "/pages/life-list/index?mode=nearby" });
+  },
+  viewRecommendation() {
+    const id = this.data.recommendation?.targetLifeObjectId;
+    if (id) {
+      this.runtime.detailReturn = true;
+      wx.navigateTo({ url: `/pages/life-detail/index?id=${id}` });
+    }
+  },
+  async viewCapture(event: WechatMiniprogram.TouchEvent) {
+    this.invalidateClearedPictures();
+    const card = this.data.cards.find((item) => item.id === event.currentTarget.dataset.id);
+    if (!card) return;
+    const capture = this.data.captures.find((item) => item.id === card.id);
+    this.updateData({
+      captureReview: {
+        ...card,
+        original:
+          capture?.text ??
+          card.original ??
+          (card.id === this.runtime.localCaptureId || card.id === this.runtime.voiceCardId
+            ? this.data.draft
+            : ""),
+      },
+    });
+    if (capture?.type === "IMAGE" && !card.imagePath) {
+      const owner = client.userId;
+      try {
+        const picture = await this.readHomeCaptureImage(card.id);
+        if (
+          picture &&
+          !this.runtime.unloaded &&
+          client.userId === owner &&
+          picture.cacheEpoch === getCaptureImageCacheEpoch() &&
+          this.data.captureReview?.id === card.id
+        )
+          this.updateData({
+            captureReview: { ...this.data.captureReview, imagePath: picture.path },
+          });
+      } catch {
+        // Original text and the capture status remain available for review.
+      }
+    }
+  },
+  closeCaptureReview() {
+    this.updateData({ captureReview: null });
+  },
+  previewCaptureImage() {
+    const path = this.data.captureReview?.imagePath || this.data.imagePath;
+    if (path) wx.previewImage({ current: path, urls: [path] });
+  },
+  openConditions() {
+    if (this.data.busy || this.data.recommendation?.progress?.state === "ACTIVE") return;
+    this.updateData({
+      conditionsSheet: true,
+      conditionGoingOut: "any",
+      conditionMinutes: "any",
+      conditionBudget: "any",
+    });
+  },
+  closeConditions() {
+    if (!this.data.busy) this.updateData({ conditionsSheet: false });
+  },
+  selectCondition(event: WechatMiniprogram.TouchEvent) {
+    const { field, value } = event.currentTarget.dataset;
+    if (field === "goingOut" && ["any", "yes", "no"].includes(value))
+      this.updateData({ conditionGoingOut: value });
+    if (field === "minutes" && ["any", "30", "120", "240"].includes(value))
+      this.updateData({ conditionMinutes: value });
+    if (field === "budget" && ["any", "10000", "0"].includes(value))
+      this.updateData({ conditionBudget: value });
+  },
+  async applyConditions() {
+    if (this.data.busy) return;
+    const { conditionGoingOut, conditionMinutes, conditionBudget } = this.data;
+    this.clearRequestLocation();
+    this.runtime.nextDecisionContext = {
+      ...(conditionGoingOut !== "any" ? { willingToGoOut: conditionGoingOut === "yes" } : {}),
+      ...(conditionMinutes !== "any" ? { availableMinutes: Number(conditionMinutes) } : {}),
+      ...(conditionBudget !== "any" ? { budgetMinor: Number(conditionBudget) } : {}),
+    };
+    this.updateData({ conditionsSheet: false });
+    await this.decide();
+  },
+  async decideWithoutConditions() {
+    if (this.data.busy) return;
+    this.runtime.nextDecisionContext = null;
+    this.updateData({ conditionsSheet: false });
+    await this.decide();
+  },
+  openRouteSheet() {
+    if (this.data.recommendation) this.updateData({ routeSheet: true });
+  },
+  closeRouteSheet() {
+    if (!this.data.busy) this.updateData({ routeSheet: false });
+  },
+  openLocationSheet() {
+    if (!this.data.busy) this.updateData({ locationSheet: true });
+  },
+  closeLocationSheet() {
+    if (!this.data.busy) this.updateData({ locationSheet: false });
+  },
+  async confirmRouteLocation() {
+    this.updateData({ locationSheet: false });
+    if (this.data.busy) return;
+    this.clearLocationChoices();
+    await this.runRouteVerification();
   },
   async rateLifeItem(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;
@@ -706,7 +1133,7 @@ Page({
         sessionId: "",
         decided: false,
         canVerifyRoute: false,
-        notice: "已删除该心愿。",
+        notice: "已删除这条记录。",
         lifeStacks: this.data.lifeStacks
           .map((group) =>
             createLifeStack(
@@ -777,6 +1204,7 @@ Page({
   cleanupMedia() {
     const state = this.runtime;
     state.mediaGeneration++;
+    state.imagePickerOpen = false;
     if (
       state.voice &&
       state.voiceCardId &&
@@ -820,8 +1248,7 @@ Page({
     if (this.data.imageLoading || this.data.busy || this.data.voiceStatus === "finishing") return;
     this.cleanupMedia();
     const generation = state.mediaGeneration;
-    let selectedImage = false;
-    this.updateData({ inputMode: "image", imageLoading: true, error: "" });
+    this.updateData({ inputMode: "image", imageLoading: true, error: "", capturePermission: "" });
     try {
       const caps = await client.request("/v1/media/capabilities", capabilitiesSchema);
       if (generation !== state.mediaGeneration || state.unloaded) return;
@@ -829,19 +1256,56 @@ Page({
         this.updateData({ error: "图片理解尚未配置。可以先留下文字，配置后再添加图片。" });
         return;
       }
+      state.imagePickerOpen = true;
       const image = await chooseCaptureImage();
       if (generation !== state.mediaGeneration || state.unloaded || !image) return;
       state.image = image;
       state.voiceSessionId = "";
       this.updateData({ imagePath: image.path });
-      selectedImage = true;
     } catch (error) {
-      if (generation === state.mediaGeneration) this.updateData({ error: userMessage(error) });
+      if (generation === state.mediaGeneration)
+        this.updateData({
+          error: userMessage(error),
+          capturePermission:
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "IMAGE_PERMISSION_REQUIRED"
+              ? "image"
+              : "",
+        });
     } finally {
-      if (generation === state.mediaGeneration) this.updateData({ imageLoading: false });
+      if (generation === state.mediaGeneration) {
+        state.imagePickerOpen = false;
+        this.updateData({ imageLoading: false });
+      }
     }
-    if (selectedImage && generation === state.mediaGeneration && !state.unloaded)
-      void this.saveCapture();
+  },
+  openCapturePermissions() {
+    const state = this.runtime;
+    const owner = client.userId;
+    const generation = state.mediaGeneration;
+    if (
+      !owner ||
+      this.data.busy ||
+      !this.data.capturePermission ||
+      typeof wx.openSetting !== "function"
+    )
+      return;
+    wx.openSetting({
+      success: () => {
+        if (!state.unloaded && owner === client.userId && generation === state.mediaGeneration)
+          this.updateData({
+            capturePermission: "",
+            error: "",
+            notice: "已返回权限设置，可以重新选择图片或按住说话。",
+          });
+      },
+      fail: () => {
+        if (!state.unloaded && owner === client.userId && generation === state.mediaGeneration)
+          this.updateData({ error: "暂时无法打开微信权限设置，请稍后重试。" });
+      },
+    });
   },
   removeImage() {
     this.runtime.image = null;
@@ -856,6 +1320,7 @@ Page({
       inputMode: "voice",
       voiceStatus: "idle",
       error: "",
+      capturePermission: "",
       voicePrompt: "按住说话，松手就收好",
     });
     const generation = this.runtime.mediaGeneration;
@@ -870,7 +1335,10 @@ Page({
         },
         fail: () => {
           if (generation === this.runtime.mediaGeneration)
-            this.updateData({ error: userMessage({ code: "VOICE_PERMISSION_REQUIRED" }) });
+            this.updateData({
+              error: userMessage({ code: "VOICE_PERMISSION_REQUIRED" }),
+              capturePermission: "scope.record",
+            });
         },
       });
   },
@@ -967,7 +1435,18 @@ Page({
         state.voice?.cancel();
         state.voice = null;
         state.voiceHolding = state.voiceAutoSubmit = false;
-        this.updateData({ voiceStatus: "idle", voiceHolding: false, error: userMessage(error) });
+        this.updateData({
+          voiceStatus: "idle",
+          voiceHolding: false,
+          error: userMessage(error),
+          capturePermission:
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "VOICE_PERMISSION_REQUIRED"
+              ? "scope.record"
+              : "",
+        });
         this.failVoiceCard();
       }
     }
@@ -1071,11 +1550,13 @@ Page({
   },
   noop() {},
   editDraft(event: WechatMiniprogram.TextareaInput) {
-    this.updateData({ draft: event.detail.value });
+    this.updateData({ draft: event.detail.value.slice(0, 5000) });
   },
   async saveCapture() {
     const state = this.runtime;
     if (
+      !client.userId ||
+      state.unloaded ||
       this.data.busy ||
       this.data.imageLoading ||
       ["connecting", "recording", "finishing"].includes(this.data.voiceStatus)
@@ -1100,10 +1581,18 @@ Page({
       return;
     }
     const signature = JSON.stringify(input.data);
+    const previousLocalId = state.localCaptureId;
     if (state.capturePending?.signature !== signature)
       state.localCaptureId = state.voiceCardId || "sending-" + Date.now();
     const localId = state.localCaptureId;
     const generation = state.mediaGeneration;
+    const owner = client.userId;
+    const operation = state.operationEpoch;
+    const isCurrent = () =>
+      !state.unloaded &&
+      client.userId === owner &&
+      generation === state.mediaGeneration &&
+      operation === state.operationEpoch;
     const sending: HomeCard = {
       id: localId,
       title: image ? "留下一张图片" : "留下一个念头",
@@ -1111,6 +1600,7 @@ Page({
       phase: "SENDING",
       imagePath: image?.path ?? "",
       statusLabel: "正在收纳",
+      original: input.data.text ?? "",
     };
     this.updateData({
       busy: true,
@@ -1119,19 +1609,25 @@ Page({
       error: "",
       cards: [
         sending,
-        ...this.data.cards.filter((card) => card.id !== localId && card.id !== state.voiceCardId),
+        ...this.data.cards.filter(
+          (card) =>
+            card.id !== localId && card.id !== previousLocalId && card.id !== state.voiceCardId,
+        ),
       ],
     });
     try {
-      if (state.capturePending?.signature !== signature)
-        state.capturePending = { signature, key: await client.newKey() };
-      if (state.unloaded || generation !== state.mediaGeneration) return;
+      if (state.capturePending?.signature !== signature) {
+        const key = await client.newKey();
+        if (!isCurrent()) return;
+        state.capturePending = { signature, key };
+      }
+      if (!isCurrent()) return;
       const receipt = await client.request("/v1/captures", captureAcceptedSchema, {
         method: "POST",
         data: input.data,
         key: state.capturePending.key,
       });
-      if (state.unloaded || generation !== state.mediaGeneration) return;
+      if (!isCurrent()) return;
       state.capturePending = null;
       this.updateData({
         cards: this.data.cards.map((card) =>
@@ -1155,7 +1651,7 @@ Page({
       state.pollCount = 0;
       void this.refreshLists();
     } catch (error) {
-      if (generation === state.mediaGeneration)
+      if (isCurrent())
         this.updateData({
           error: userMessage(error),
           cards: this.data.cards.map((card) =>
@@ -1170,53 +1666,109 @@ Page({
           ),
         });
     } finally {
-      this.updateData({ busy: false });
+      if (!state.unloaded && client.userId === owner && operation === state.operationEpoch)
+        this.updateData({ busy: false });
     }
   },
-  async refreshLists() {
+  renderCaptures(captures: CaptureResponse[]) {
+    const ids = new Set(captures.map((item) => item.id));
+    const local = this.data.cards.filter(
+      (card) =>
+        !ids.has(card.id) &&
+        ["TRANSCRIBING", "SENDING", "FAILED_LOCAL", "UPLOADED", "PROCESSING"].includes(card.phase),
+    );
+    this.updateData({
+      lifeCaptures: captures
+        .filter((item) => item.status !== "READY" || !item.title)
+        .map((item) => ({ ...item, statusLabel: statusLabels[item.status] ?? "已收纳" })),
+      captures: captures.map((item) => ({
+        ...item,
+        statusLabel: statusLabels[item.status] ?? "已收纳",
+      })),
+      cards: [
+        ...local,
+        ...captures.map((item) =>
+          captureCard(item, this.data.cards.find((card) => card.id === item.id)?.imagePath),
+        ),
+      ],
+    });
+    void this.loadJournalImages();
+  },
+  async loadMoreCaptures() {
+    const state = this.runtime;
+    const cursor = state.captureCursor;
+    const owner = client.userId;
+    if (!owner || !cursor || state.loadingLists || this.data.capturesLoading || state.unloaded)
+      return;
+    const generation = state.listGeneration;
+    const isCurrent = () =>
+      !state.unloaded && owner === client.userId && generation === state.listGeneration;
+    this.updateData({ capturesLoading: true, capturesMoreError: "" });
+    try {
+      const page = await client.request(
+        `/v1/captures/page?cursor=${encodeURIComponent(cursor)}`,
+        capturePageResponseSchema,
+      );
+      if (!isCurrent()) return;
+      const seen = new Set(this.data.captures.map((item) => item.id));
+      this.renderCaptures([
+        ...this.data.captures,
+        ...page.items.filter((item) => !seen.has(item.id)),
+      ]);
+      state.captureCursor = page.nextCursor;
+      this.updateData({ capturesHasMore: !!page.nextCursor });
+    } catch (error) {
+      if (isCurrent()) this.updateData({ capturesMoreError: userMessage(error) });
+    } finally {
+      if (isCurrent()) this.updateData({ capturesLoading: false });
+    }
+  },
+  async refreshLists(resetPages = true) {
     const state = this.runtime;
     if (!client.userId || state.loadingLists || state.unloaded) return;
     state.loadingLists = true;
+    const owner = client.userId;
+    const generation = ++state.listGeneration;
+    this.updateData({ capturesLoading: false, capturesMoreError: "" });
     if (state.poll) clearTimeout(state.poll);
     try {
-      const [sections, captures] = await Promise.all([
+      const [sections, page] = await Promise.all([
         client.request("/v1/life/sections", lifeSectionsResponseSchema),
-        client.request("/v1/captures", captureListResponseSchema),
+        client.request("/v1/captures/page", capturePageResponseSchema),
       ]);
+      if (state.unloaded || client.userId !== owner || generation !== state.listGeneration) return;
+      const captures = page.items;
+      if (resetPages) state.captureCursor = page.nextCursor;
+      this.updateData({ capturesHasMore: !!state.captureCursor });
       const readyForDecision = captures.some(
         (item) => item.id === state.pendingDecisionCaptureId && item.status === "READY",
       );
-      const ids = new Set(captures.map((item) => item.id));
-      const local = this.data.cards.filter(
-        (card) =>
-          !ids.has(card.id) &&
-          ["TRANSCRIBING", "SENDING", "FAILED_LOCAL", "UPLOADED", "PROCESSING"].includes(
-            card.phase,
-          ),
-      );
       this.updateData({
-        sections,
-        lifeCaptures: captures
-          .filter((item) => item.status !== "READY" || !item.title)
-          .map((item) => ({ ...item, statusLabel: statusLabels[item.status] ?? "已收纳" })),
-        captures: captures.map((item) => ({
-          ...item,
-          statusLabel: statusLabels[item.status] ?? "已收纳",
+        sections: sections.map((section) => ({
+          ...section,
+          items: section.items.map((item) => ({
+            ...item,
+            kindLabel:
+              kindOptions.find((option) => option.value === item.kind)?.label ?? "生活记录",
+          })),
         })),
-        cards: [
-          ...local,
-          ...captures.map((item) =>
-            captureCard(item, this.data.cards.find((card) => card.id === item.id)?.imagePath),
-          ),
-        ],
       });
+      const ids = new Set(captures.map((item) => item.id));
+      this.renderCaptures(
+        resetPages
+          ? captures
+          : [...captures, ...this.data.captures.filter((item) => !ids.has(item.id))],
+      );
       if (this.data.tab === "life" && (readyForDecision || !this.data.lifeStacksLoaded))
         void this.loadLifeStacks(readyForDecision);
       if (readyForDecision) this.refreshDecisionAfterCapture();
     } catch (error) {
-      this.updateData({ error: userMessage(error) });
+      if (!state.unloaded && client.userId === owner)
+        this.updateData({ error: userMessage(error) });
     } finally {
-      state.loadingLists = false;
+      if (generation === state.listGeneration) state.loadingLists = false;
+      if (!state.unloaded && state.visible && client.userId && client.userId !== owner)
+        void this.refreshLists();
       const pending = this.data.cards.some((card) =>
         ["UPLOADED", "PROCESSING"].includes(card.phase),
       );
@@ -1226,7 +1778,7 @@ Page({
           state.pollCount > 20 ? 30000 : delays[Math.min(state.pollCount, delays.length - 1)]!;
         state.pollCount++;
         state.poll = setTimeout(() => {
-          void this.refreshLists();
+          void this.refreshLists(false);
         }, delay);
       }
     }
@@ -1251,6 +1803,7 @@ Page({
     state.pollCount = 0;
     this.updateData({ error: "" });
     void this.refreshLists();
+    if (this.data.sessionId && !this.data.busy) void this.refreshCurrentSession();
     if (this.data.tab === "life") void this.loadLifeStacks(true);
   },
   openSection(event: WechatMiniprogram.TouchEvent) {
@@ -1263,14 +1816,23 @@ Page({
     });
   },
   async decide() {
-    if (this.data.busy || this.data.voiceStatus === "finishing") return;
+    const state = this.runtime;
+    const owner = client.userId;
+    const operation = state.operationEpoch;
+    const isCurrent = () =>
+      !state.unloaded && owner === client.userId && operation === state.operationEpoch;
+    if (!owner || state.unloaded || this.data.busy || this.data.voiceStatus === "finishing") return;
+    if (state.feedbackPending) {
+      this.updateData({ error: "上次反馈尚未确认，请先重试原来的选择。" });
+      return;
+    }
     this.updateData({ busy: true, error: "", notice: "" });
     try {
       await this.requestDecision();
     } catch (error) {
-      this.updateData({ error: userMessage(error) });
+      if (isCurrent()) this.updateData({ error: userMessage(error) });
     } finally {
-      this.updateData({ busy: false });
+      if (isCurrent()) this.updateData({ busy: false });
     }
   },
   clearRequestLocation() {
@@ -1515,7 +2077,39 @@ Page({
     }
   },
   async verifyCurrentRoute() {
-    if (this.data.busy) return;
+    const state = this.runtime;
+    const owner = client.userId;
+    const target = this.data.recommendation?.targetLifeObjectId;
+    const operation = state.operationEpoch;
+    if (
+      !owner ||
+      !target ||
+      state.unloaded ||
+      this.data.busy ||
+      !this.data.canVerifyRoute ||
+      !this.data.hasConfirmedDestination ||
+      this.data.recommendation?.progress?.state === "ACTIVE"
+    )
+      return;
+    const isCurrent = () =>
+      !state.unloaded &&
+      owner === client.userId &&
+      target === this.data.recommendation?.targetLifeObjectId &&
+      operation === state.operationEpoch;
+    this.updateData({ busy: true, error: "" });
+    let allowed = false;
+    try {
+      const settings = await client.request("/v1/settings", userSettingsResponseSchema);
+      if (!isCurrent()) return;
+      allowed = settings.privacy.useLocation;
+      if (!allowed) this.updateData({ locationSheet: true });
+    } catch (error) {
+      if (isCurrent()) this.updateData({ error: userMessage(error) });
+      return;
+    } finally {
+      if (isCurrent()) this.updateData({ busy: false });
+    }
+    if (!isCurrent() || !allowed) return;
     this.clearLocationChoices();
     await this.runRouteVerification();
   },
@@ -1769,9 +2363,10 @@ Page({
     if (state.requestLocation && Date.parse(state.requestLocation.expiresAt ?? "") <= Date.now())
       state.requestLocation = null;
     const input = createNowSessionRequestSchema.parse({
-      context: state.requestLocation
-        ? { location: state.requestLocation, willingToGoOut: true }
-        : {},
+      context: {
+        ...(state.requestLocation ? { location: state.requestLocation, willingToGoOut: true } : {}),
+        ...state.nextDecisionContext,
+      },
       excludeObjectIds: state.exclusions,
       ...(focusObjectId ? { focusObjectId } : {}),
     });
@@ -1791,6 +2386,7 @@ Page({
     if (state.unloaded || generation !== state.locationGeneration || client.userId !== owner)
       return;
     state.nowPending = null;
+    state.nextDecisionContext = null;
     state.feedbackPending = null;
     this.applyNow(result);
     return result;
@@ -1798,24 +2394,36 @@ Page({
   async answerQuestion(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;
     const question = this.data.question;
+    const owner = client.userId;
+    const sessionId = this.data.sessionId;
+    const operation = state.operationEpoch;
+    const isCurrent = () =>
+      !state.unloaded &&
+      owner === client.userId &&
+      operation === state.operationEpoch &&
+      sessionId === this.data.sessionId;
     if (this.data.busy || !question) return;
     const optionId = event.currentTarget.dataset.option;
     if (!question.options.some((option) => option.id === optionId)) return;
     const data = { questionId: question.id, optionId };
     const signature = JSON.stringify(data);
-    if (state.answerPending?.signature !== signature)
-      state.answerPending = { signature, key: await client.newKey() };
     this.updateData({ busy: true, error: "" });
     try {
+      if (state.answerPending?.signature !== signature) {
+        const key = await client.newKey();
+        if (!isCurrent()) return;
+        state.answerPending = { signature, key };
+      }
       const result = await client.request(
-        `/v1/now/sessions/${this.data.sessionId}/answers`,
+        `/v1/now/sessions/${sessionId}/answers`,
         nowResponseSchema,
         { method: "POST", data, key: state.answerPending.key },
       );
-      if (state.unloaded) return;
+      if (!isCurrent()) return;
       state.answerPending = null;
       this.applyNow(result);
     } catch (error) {
+      if (!isCurrent()) return;
       if (
         typeof error === "object" &&
         error !== null &&
@@ -1832,57 +2440,41 @@ Page({
       }
       this.updateData({ error: userMessage(error) });
     } finally {
-      this.updateData({ busy: false });
+      if (isCurrent()) this.updateData({ busy: false });
     }
   },
-  async feedback(event: WechatMiniprogram.TouchEvent) {
+  async consumeFeedbackReceipt() {
     const state = this.runtime;
-    if (this.data.busy || !this.data.recommendation) return;
-    const eventType = event.currentTarget.dataset.type as "ACCEPT" | "SKIP" | "COMPLETE" | "REJECT";
-    this.updateData({ busy: true, error: "" });
+    const receipt = state.feedbackReceipt;
+    if (!receipt || receipt.owner !== client.userId || state.unloaded) return;
+    const operation = state.operationEpoch;
+    const isCurrent = () =>
+      !state.unloaded && receipt.owner === client.userId && operation === state.operationEpoch;
+    state.feedbackReceipt = null;
+    const { eventType, result, recommendation, sessionId, target } = receipt;
+    const marker = `${client.storageKey}:active:${receipt.owner}`;
+    this.updateData({ busy: true });
     try {
-      const signature = this.data.sessionId + ":" + eventType;
-      if (state.feedbackPending && state.feedbackPending.signature !== signature) {
-        this.updateData({ error: "上次反馈尚未确认，请先重试原来的选择。" });
-        return;
-      }
-      if (!state.feedbackPending)
-        state.feedbackPending = {
-          signature,
-          key: await client.newKey(),
-          clientEventId: await client.newKey(),
-        };
-      const data = createFeedbackRequestSchema.parse({
-        eventType,
-        clientEventId: state.feedbackPending.clientEventId,
-      });
-      const feedbackResult = await client.request(
-        `/v1/now/sessions/${this.data.sessionId}/feedback`,
-        feedbackAcceptedSchema,
-        { method: "POST", data, key: state.feedbackPending.key },
-      );
-      if (state.unloaded) return;
-      const target = this.data.recommendation.targetLifeObjectId;
-      state.feedbackPending = null;
-      if (eventType === "ACCEPT" && this.data.recommendation.plan && feedbackResult.progress) {
-        if (client.userId)
-          wx.setStorageSync(`${client.storageKey}:active:${client.userId}`, this.data.sessionId);
+      if (eventType === "ACCEPT" && recommendation.plan && result.progress) {
+        wx.setStorageSync(marker, sessionId);
         this.updateData({
-          recommendation: { ...this.data.recommendation, progress: feedbackResult.progress },
+          recommendation: { ...recommendation, progress: result.progress },
           notice: "已开始，实际用时会记录下来。",
         });
-        const current = await client.request(
-          `/v1/now/sessions/${this.data.sessionId}`,
-          nowResponseSchema,
-        );
-        if (!state.unloaded && current.recommendation) this.applyNow(current);
+        const current = await client.request(`/v1/now/sessions/${sessionId}`, nowResponseSchema);
+        if (isCurrent() && this.data.sessionId === sessionId && current.recommendation)
+          this.applyNow(current);
         return;
       }
-      if (client.userId) wx.removeStorageSync(`${client.storageKey}:active:${client.userId}`);
+      wx.removeStorageSync(marker);
       this.updateData({ recommendation: null, question: null, sessionId: "", decided: false });
       if (eventType === "COMPLETE") {
+        const seconds = result.progress?.elapsedSeconds;
         this.updateData({
-          notice: `这一步完成了，${(feedbackResult.progress?.elapsedSeconds ?? 0) < 60 ? "用时不到 1 分钟" : `用了 ${Math.ceil((feedbackResult.progress?.elapsedSeconds ?? 0) / 60)} 分钟`}。`,
+          notice:
+            seconds == null
+              ? "这一步完成了。"
+              : `这一步完成了，${seconds < 60 ? "用时不到 1 分钟" : `用了 ${Math.ceil(seconds / 60)} 分钟`}。`,
         });
         void this.refreshLists();
       } else if (eventType === "REJECT") this.updateData({ notice: "已结束这次安排。" });
@@ -1891,9 +2483,68 @@ Page({
         await this.requestDecision();
       } else this.updateData({ notice: "记下了，按自己的节奏开始吧。" });
     } catch (error) {
-      this.updateData({ error: userMessage(error) });
+      if (isCurrent()) this.updateData({ error: userMessage(error) });
     } finally {
-      this.updateData({ busy: false });
+      if (isCurrent()) this.updateData({ busy: false });
+    }
+  },
+  async feedback(event: WechatMiniprogram.TouchEvent) {
+    const state = this.runtime;
+    const owner = client.userId;
+    const sessionId = this.data.sessionId;
+    const recommendation = this.data.recommendation;
+    const operation = state.operationEpoch;
+    const isCurrent = () =>
+      !state.unloaded &&
+      owner === client.userId &&
+      operation === state.operationEpoch &&
+      sessionId === this.data.sessionId;
+    if (!owner || state.unloaded || this.data.busy || !recommendation || !sessionId) return;
+    const eventType = event.currentTarget.dataset.type as "ACCEPT" | "SKIP" | "COMPLETE" | "REJECT";
+    if (!["ACCEPT", "SKIP", "COMPLETE", "REJECT"].includes(eventType)) return;
+    this.updateData({ busy: true, error: "" });
+    try {
+      const signature = sessionId + ":" + eventType;
+      if (state.feedbackPending && state.feedbackPending.signature !== signature) {
+        this.updateData({ error: "上次反馈尚未确认，请先重试原来的选择。" });
+        return;
+      }
+      if (!state.feedbackPending) {
+        const key = await client.newKey();
+        const clientEventId = await client.newKey();
+        if (!isCurrent()) return;
+        state.feedbackPending = { signature, key, clientEventId };
+      }
+      const pending = state.feedbackPending;
+      const data = createFeedbackRequestSchema.parse({
+        eventType,
+        clientEventId: pending.clientEventId,
+      });
+      const result = await client.request(
+        `/v1/now/sessions/${sessionId}/feedback`,
+        feedbackAcceptedSchema,
+        { method: "POST", data, key: pending.key },
+      );
+      if (state.unloaded || owner !== client.userId || sessionId !== this.data.sessionId) return;
+      if (state.feedbackPending === pending) state.feedbackPending = null;
+      state.feedbackReceipt = {
+        owner,
+        sessionId,
+        target: recommendation.targetLifeObjectId,
+        eventType,
+        recommendation,
+        result,
+      };
+      // A successful hidden write is reconciled on return without posting it again.
+      if (!isCurrent()) {
+        if (state.visible) void this.consumeFeedbackReceipt();
+        return;
+      }
+      await this.consumeFeedbackReceipt();
+    } catch (error) {
+      if (isCurrent()) this.updateData({ error: userMessage(error) });
+    } finally {
+      if (isCurrent()) this.updateData({ busy: false });
     }
   },
 });

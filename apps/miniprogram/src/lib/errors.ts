@@ -1,4 +1,13 @@
 const messages: Record<string, string> = {
+  AVATAR_READ_FAILED: "头像读取失败，请重新选择。",
+  AVATAR_TOO_LARGE: "头像压缩后仍偏大，请换一张较小的图片。",
+  AVATAR_FORMAT_OR_SIZE_INVALID: "请选择 JPG 或 PNG 头像，压缩后需小于 256 KB。",
+  AVATAR_STORAGE_UNAVAILABLE: "资料已保存，头像暂时未显示。请清理本机空间后重新进入。",
+  AVATAR_CHANGED: "头像刚刚有更新，请重新进入个人资料查看。",
+
+  TICKET_VERIFICATION_NOT_INTEGRATED: "门店适用范围核验尚未接入，券面内容已保留。",
+  REMINDER_DELIVERY_NOT_INTEGRATED: "提醒推送尚未接入，这条事项仍保留在生活页。",
+  RECORD_EXPORT_NOT_INTEGRATED: "完整记录导出尚未接入，原始内容仍保存在账户中。",
   LOCATION_PERMISSION_REQUIRED: "可在微信设置中允许定位，原来的建议还在。",
   LOCATION_SYSTEM_DISABLED: "请在手机系统设置中开启定位，并允许微信使用位置后重试。",
   LOCATION_PRIVACY_REQUIRED: "请先在微信中确认位置相关的隐私授权，原来的建议还在。",
@@ -45,6 +54,8 @@ const messages: Record<string, string> = {
   WECHAT_LOGIN_NOT_CONFIGURED: "登录服务尚未配置完成。",
   MOCK_LOGIN_FORBIDDEN: "当前版本不支持开发登录。",
   RESPONSE_INVALID: "服务返回异常，请稍后重试。",
+  INVALID_CAPTURE_CURSOR: "记录列表已更新，请点击更新后重新查看。",
+  INVALID_LIFE_CURSOR: "筛选条件或记录列表已更新，请重新搜索。",
   ACTION_SOURCE_CHANGED: "这个事项已经更新，请重新获取建议。",
   ACTION_TIME_CONFLICT: "这段时间已有安排，请先完成当前行动，或重新获取建议。",
   RECOMMENDATION_EXPIRED: "这个建议的时间条件已变，请重新获取建议。",

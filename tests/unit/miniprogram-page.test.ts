@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { randomUUID, randomBytes } from "node:crypto";
-import { createContext, runInContext } from "node:vm";
+import { createContext } from "node:vm";
+import { createNativeModuleLoader } from "../helpers/native-module-loader";
 import { describe, expect, it } from "vitest";
+import { userSettingsResponseSchema } from "@life/contracts";
 
 const requestId = randomUUID();
 const userId = randomUUID();
@@ -62,7 +65,22 @@ function mount(
         getRandomValues: ({ success }: any) =>
           success({ randomValues: new Uint8Array(randomBytes(16)).buffer }),
         nextTick: (callback: () => void) => Promise.resolve().then(callback),
-        request: send,
+        request: (options: any) => {
+          // Existing route fixtures assume explicit long-term location consent.
+          // Tests for consent denial override wx.request rather than this default.
+          if (options.url.endsWith("/v1/settings"))
+            success(
+              options,
+              userSettingsResponseSchema.parse({
+                recommendation: {},
+                privacy: { useLocation: true },
+                notifications: {},
+                onboardingCompleted: true,
+                updatedAt: null,
+              }),
+            );
+          else send(options);
+        },
         showToast: (options: any) => toasts.push(options),
         navigateTo: ({ url }: any) => navigations.push(url),
         navigateBack: () => {},
@@ -75,22 +93,13 @@ function mount(
     },
     { codeGeneration: { strings: false, wasm: false } },
   );
-  // WeChat scopes every CommonJS module; isolate bundle-local variables the same way.
-  runInContext(
-    "(function(){" + readFileSync("apps/miniprogram/dist/app.js", "utf8") + "\n})();",
-    context,
-  );
+  const native = createNativeModuleLoader(context);
+  native.runEntry("app.js");
   function loadRoute(name: string) {
-    runInContext(
-      "(function(){" +
-        readFileSync(
-          name === "home"
-            ? (process.env.MINIPROGRAM_TEST_BUNDLE ?? "apps/miniprogram/dist/pages/home/index.js")
-            : `apps/miniprogram/dist/pages/${name}/index.js`,
-          "utf8",
-        ) +
-        "\n})();",
-      context,
+    native.runEntry(
+      name === "home" && process.env.MINIPROGRAM_TEST_BUNDLE
+        ? resolve(process.env.MINIPROGRAM_TEST_BUNDLE)
+        : `pages/${name}/index.js`,
     );
   }
   loadRoute(route);
@@ -119,8 +128,161 @@ function mount(
   return createInstance();
 }
 function success(options: any, data: unknown) {
+  if (/\/captures\/page(?:\?|$)/.test(options.url) && Array.isArray(data))
+    data = { items: data, nextCursor: null };
   options.success({ statusCode: 200, data: { data, request_id: requestId } });
 }
+describe("compiled personal-profile page", () => {
+  function profile(extra: object = {}) {
+    return {
+      userId,
+      nickname: "散步的人",
+      bio: "喜欢阅读",
+      avatarVersion: null,
+      identityProvider: "WECHAT",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-06T00:00:00.000Z",
+      ...extra,
+    };
+  }
+  it("loads account metadata, preserves edits across native picker hide/show, and saves into the shared home state", async () => {
+    const writes: any[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method === "POST") {
+          writes.push(options);
+          success(options, profile(options.data));
+        } else success(options, profile());
+      },
+      true,
+      "profile",
+    );
+    await page.loadProfile();
+    expect(page.data.nickname).toBe("散步的人");
+    expect(page.data.wechatLinked).toBe(true);
+    page.editNickname({ detail: { value: "新的称呼" } });
+    page.editBio({ detail: { value: "新的简介" } });
+    page.onShow();
+    expect(page.data.nickname).toBe("新的称呼");
+    await page.saveProfile();
+    expect(writes[0].data).toEqual({ nickname: "新的称呼", bio: "新的简介" });
+    expect(page.data.dirty).toBe(false);
+    expect(page.data.notice).toBe("个人资料已保存");
+    expect(page.services.sessionStore.nickname).toBe("新的称呼");
+    page.onUnload();
+  });
+  it("preserves a failed draft and its operation key, then uses a new key after edits", async () => {
+    const writes: any[] = [];
+    const page = mount(
+      (options) => {
+        if (options.method === "POST") {
+          writes.push(options);
+          options.fail({ errMsg: "offline" });
+        } else success(options, profile());
+      },
+      false,
+      "profile",
+    );
+    await page.loadProfile();
+    page.editNickname({ detail: { value: "暂未保存" } });
+    await page.saveProfile();
+    await page.saveProfile();
+    expect(page.data.nickname).toBe("暂未保存");
+    expect(page.data.dirty).toBe(true);
+    expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
+    page.editNickname({ detail: { value: "另一个称呼" } });
+    await page.saveProfile();
+    expect(writes[2].header["X-Idempotency-Key"]).not.toBe(writes[1].header["X-Idempotency-Key"]);
+    expect(page.toasts).toHaveLength(0);
+    page.onUnload();
+  });
+  it("does not label a development account as linked to WeChat", async () => {
+    const page = mount(
+      (options) => success(options, profile({ identityProvider: "DEVELOPMENT" })),
+      false,
+      "profile",
+    );
+    await page.loadProfile();
+    expect(page.data.wechatLinked).toBe(false);
+    expect(page.data.identityLabel).toBe("开发体验账号");
+    page.onUnload();
+  });
+  it("downloads private avatar bytes to a local image and removes the cache on logout", async () => {
+    const version = randomUUID(),
+      files = new Map<string, string>();
+    const image = { mimeType: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" };
+    const page = mount(
+      (options) =>
+        success(
+          options,
+          options.url.endsWith("/avatar")
+            ? { avatarVersion: version, image }
+            : profile({ avatarVersion: version }),
+        ),
+      false,
+      "profile",
+      {
+        env: { USER_DATA_PATH: "/user-data" },
+        getFileSystemManager: () => ({
+          writeFileSync: (path: string, bytes: string) => files.set(path, bytes),
+          unlinkSync: (path: string) => files.delete(path),
+        }),
+      },
+    );
+    await page.loadProfile();
+    expect(page.data.avatarPath).toContain(`${userId}-${version}.png`);
+    expect(files.get(page.data.avatarPath)).toBe(image.base64);
+    page.services.client.clear();
+    expect(files.size).toBe(0);
+    expect(page.services.sessionStore.avatarPath).toBe("");
+    page.onUnload();
+  });
+  it("ignores a delayed load after logout without restoring user content", async () => {
+    let pending: any;
+    const page = mount(
+      (options) => {
+        pending = options;
+      },
+      false,
+      "profile",
+    );
+    const loading = page.loadProfile();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    page.services.client.clear();
+    success(pending, profile());
+    await loading;
+    expect(page.data.nickname).toBe("");
+    expect(page.services.sessionStore.nickname).toBe("");
+    page.onUnload();
+  });
+  it("blocks an oversized nickname and confirms leaving unsaved edits", async () => {
+    const modals: any[] = [];
+    const page = mount((options) => success(options, profile()), false, "profile", {
+      showModal: (options: any) => modals.push(options),
+    });
+    await page.loadProfile();
+    page.editNickname({ detail: { value: "长".repeat(33) } });
+    await page.saveProfile();
+    expect(page.data.error).toContain("昵称最多");
+    page.goBack();
+    expect(modals[0].title).toBe("还有未保存的修改");
+    page.onUnload();
+  });
+  it("returns to a clean home after logout from the separate profile page", async () => {
+    const home = mount((options) => success(options, []));
+    home.setData({
+      draft: "旧账号内容",
+      recommendation: { headline: "旧建议" },
+      cards: [{ id: "old" }],
+    });
+    home.services.client.clear();
+    home.onShow();
+    expect(home.data.draft).toBe("");
+    expect(home.data.recommendation).toBeNull();
+    expect(home.data.cards).toEqual([]);
+    home.onUnload();
+  });
+});
 describe("compiled Mini Program page in a restricted JS runtime", () => {
   it("disables Zod JIT before contracts when Function returns a non-callable object", async () => {
     const page = mount((options) => {
@@ -415,7 +577,9 @@ describe("Category stacks, persisted preference and wish removal", () => {
     page.services.client.clear();
     success(stackRequest, [group([lifeItem("另一账号的卡")])]);
     await loading;
-    expect(page.data.lifeStacks[0].items[0].id).toBe(item.id);
+    expect(page.data.lifeStacks).toEqual([]);
+    expect(page.data.cards).toEqual([]);
+    expect(page.data.recommendation).toBeNull();
     page.onUnload();
   });
   it("keeps an active wish until the real delete receipt, then clears it and requests another suggestion", async () => {
@@ -642,6 +806,76 @@ describe("Life sections and paginated secondary page", () => {
     await flushPage();
     expect(page.data.items.map((item: any) => item.id)).toEqual([current.id]);
     expect(page.data.nextCursor).toBeNull();
+    page.onUnload();
+  });
+  it("recovers an interrupted first list load after hide without accepting the stale response", async () => {
+    const requests: any[] = [];
+    const page = mount((options) => requests.push(options), false, "life-list");
+    page.onShow();
+    await flushPage();
+    expect(requests).toHaveLength(1);
+    expect(page.data.loaded).toBe(false);
+    expect(page.data.loading).toBe(true);
+    page.onHide();
+    expect(page.data.loading).toBe(false);
+    page.onShow();
+    await flushPage();
+    expect(requests).toHaveLength(2);
+    success(requests[0], { items: [lifeItem("隐藏前的迟到结果")], nextCursor: "stale" });
+    await flushPage();
+    expect(page.data.items).toEqual([]);
+    expect(page.data.loading).toBe(true);
+    const current = lifeItem("返回后恢复的记录");
+    success(requests[1], { items: [current], nextCursor: null });
+    await flushPage();
+    expect(page.data.items.map((item: any) => item.id)).toEqual([current.id]);
+    expect(page.data.loaded).toBe(true);
+    expect(page.data.loading).toBe(false);
+    expect(page.data.nextCursor).toBeNull();
+    expect(page.locationCalls()).toBe(0);
+    page.onUnload();
+  });
+  it("resumes an interrupted nearby query with existing coordinates instead of requesting GPS again", async () => {
+    const requests: any[] = [];
+    let gpsCalls = 0;
+    const page = mount(
+      (options) => {
+        requests.push(options);
+        if (requests.length === 1) success(options, { items: [], nextCursor: null });
+      },
+      false,
+      "life-list",
+      {
+        getLocation: (options: any) => {
+          gpsCalls++;
+          options.success({ latitude: 23.1, longitude: 113.2 });
+        },
+      },
+    );
+    page.onShow();
+    await flushPage();
+    const choosing = page.setLocation({ detail: { value: "3" } });
+    await flushPage();
+    expect(gpsCalls).toBe(1);
+    expect(requests).toHaveLength(2);
+    // Returning later must not renew GPS even after the normal coordinate cache TTL.
+    page.runtime.center.acquiredAt = Date.now() - 10 * 60000;
+    page.onHide();
+    page.onShow();
+    await flushPage();
+    expect(requests).toHaveLength(3);
+    expect(gpsCalls).toBe(1);
+    expect(requests[2].data.center).toEqual(requests[1].data.center);
+    const current = { ...lifeItem("附近的记录"), hasLocation: true, distanceMeters: 120 };
+    success(requests[2], { items: [current], nextCursor: null });
+    await flushPage();
+    success(requests[1], { items: [lifeItem("旧的附近结果")], nextCursor: "stale" });
+    await choosing;
+    await flushPage();
+    expect(page.data.items.map((item: any) => item.id)).toEqual([current.id]);
+    expect(page.data.loading).toBe(false);
+    expect(page.data.locating).toBe(false);
+    expect(gpsCalls).toBe(1);
     page.onUnload();
   });
   it("keeps all records available when explicit nearby permission is denied", async () => {
@@ -1380,7 +1614,7 @@ describe("Home context and multimodal input interactions", () => {
   it.each([
     ["LOCATION_CHOICES_EXPIRED", "过期"],
     ["LOCATION_CHOICE_INVALID", "失效"],
-    ["LOCATION_OBJECT_CHANGED", "心愿已更新"],
+    ["LOCATION_OBJECT_CHANGED", "记录已更新"],
   ])("offers a friendly fresh check after %s", async (code, message) => {
     const { page, writes } = destinationChoices({
       selectSend: (options) =>
@@ -1422,6 +1656,8 @@ describe("Home context and multimodal input interactions", () => {
     const response = routePreparation();
     const page = mount(
       (options) => {
+        if (options.method !== "POST" || !options.url.endsWith("/now/sessions"))
+          return success(options, []);
         writes.push(options.data);
         success(options, response);
       },
@@ -1504,6 +1740,7 @@ describe("Home context and multimodal input interactions", () => {
     );
     await page.decide();
     const pending = page.verifyCurrentRoute();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(page.data.routeStatus).toContain("当前位置");
     expect(page.data.busy).toBe(true);
     point({ latitude: 23.1, longitude: 113.2 });
@@ -1725,6 +1962,7 @@ describe("Home context and multimodal input interactions", () => {
     });
     page.applyNow(response);
     const cancelled = page.verifyCurrentRoute();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(page.data.routeStatus).toContain("正在获取当前位置");
     expect(page.data.routeView.destinationLabel).toBe("上次的书店");
     page.onHide();
@@ -1736,6 +1974,7 @@ describe("Home context and multimodal input interactions", () => {
     page.onShow();
     expect(page.data.departureReason).toContain("上次查询");
     const updated = page.verifyCurrentRoute();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(page.data.routeView.destinationLabel).toBe("上次的书店");
     point({ latitude: 23.1, longitude: 113.2 });
     await updated;
@@ -1808,6 +2047,8 @@ describe("Home context and multimodal input interactions", () => {
     let posts = 0;
     const response = routePreparation();
     const page = mount((options) => {
+      if (options.method !== "POST" || !options.url.endsWith("/now/sessions"))
+        return success(options, []);
       posts++;
       success(options, response);
     });
@@ -1828,6 +2069,8 @@ describe("Home context and multimodal input interactions", () => {
     let posts = 0;
     const page = mount(
       (options) => {
+        if (options.method !== "POST" || !options.url.endsWith("/now/sessions"))
+          return success(options, []);
         posts++;
         success(options, routePreparation());
       },
@@ -1841,6 +2084,7 @@ describe("Home context and multimodal input interactions", () => {
     );
     await page.decide();
     const pending = page.verifyCurrentRoute();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     page.onHide();
     locationCallback({ latitude: 23.1291, longitude: 113.2644 });
     await pending;
@@ -1936,7 +2180,7 @@ describe("Home context and multimodal input interactions", () => {
             provider: "dashscope",
             reason: null,
           });
-        else if (options.method === "POST") {
+        else if (options.method === "POST" && options.url.endsWith("/captures")) {
           writes.push(options);
           success(options, {
             captureId: randomUUID(),
@@ -1960,6 +2204,10 @@ describe("Home context and multimodal input interactions", () => {
     page.openCapture();
     await page.chooseImage();
     await flushPage();
+    expect(writes).toHaveLength(0);
+    expect(page.data.sheet).toBe(true);
+    expect(page.data.imagePath).toBe("/tmp/photo.jpg");
+    await page.saveCapture();
     expect(writes[0].data).toMatchObject({
       type: "IMAGE",
       text: "想去图片里的地方",
@@ -2263,7 +2511,7 @@ describe("Home context and multimodal input interactions", () => {
     for (let index = 0; index < 25; index++) await page.refreshLists();
     expect(jobs.size).toBe(1);
     expect([...jobs.values()][0].delay).toBe(30000);
-    expect(page.data.cards[0].title).toBe("留下一个念头");
+    expect(page.data.cards[0].title).toBe("我想去海边看看，但是还没决定什么时候去");
     ready = true;
     await page.refreshLists();
     expect(jobs.size).toBe(0);
@@ -2371,7 +2619,7 @@ describe("Home context and multimodal input interactions", () => {
     expect(socket.closed).toBe(true);
     page.onUnload();
   });
-  it("auto-submits an image once, preserves its bytes on failure and retries with the same key", async () => {
+  it("waits for image confirmation, preserves its bytes on failure and retries with the same key", async () => {
     const writes: any[] = [];
     let choices = 0;
     const page = mount(
@@ -2384,7 +2632,7 @@ describe("Home context and multimodal input interactions", () => {
             provider: "qwen",
             reason: null,
           });
-        else if (options.method === "POST") {
+        else if (options.method === "POST" && options.url.endsWith("/captures")) {
           writes.push(options);
           if (writes.length === 1) options.fail({ errMsg: "offline" });
           else
@@ -2411,7 +2659,12 @@ describe("Home context and multimodal input interactions", () => {
     page.openCapture();
     await page.chooseImage();
     await flushPage();
+    expect(writes).toHaveLength(0);
+    expect(page.data.sheet).toBe(true);
+    page.editDraft({ detail: { value: "确认前补充的文字" } });
+    await page.saveCapture();
     expect(writes).toHaveLength(1);
+    expect(writes[0].data.text).toBe("确认前补充的文字");
     expect(page.data.cards[0].phase).toBe("FAILED_LOCAL");
     expect(page.runtime.image.base64).toBe("/9j/AAAA");
     expect(page.data.imagePath).toBe("/tmp/photo.jpg");
@@ -2422,6 +2675,548 @@ describe("Home context and multimodal input interactions", () => {
     expect(choices).toBe(1);
     expect(writes[0].header["X-Idempotency-Key"]).toBe(writes[1].header["X-Idempotency-Key"]);
     expect(page.toasts[0].title).toBe("收纳好了");
+    page.onUnload();
+  });
+});
+
+describe("Home capture pagination and operation fencing", () => {
+  function capture(title: string) {
+    return {
+      id: randomUUID(),
+      type: "TEXT",
+      status: "READY",
+      text: title,
+      title,
+      summary: title,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  function now() {
+    return {
+      sessionId: randomUUID(),
+      status: "RECOMMENDED",
+      replayed: false,
+      question: null,
+      recommendation: {
+        id: randomUUID(),
+        targetLifeObjectId: randomUUID(),
+        headline: "读一页",
+        body: "从一页开始",
+        reasonText: "记录中的阅读计划",
+        executionType: "READ",
+        score: 1,
+      },
+      candidates: [],
+    };
+  }
+  const event = (type: string) => ({ currentTarget: { dataset: { type } } });
+  const feedbackReceipt = (type: string) => ({
+    feedbackId: randomUUID(),
+    eventType: type,
+    replayedClientEvent: false,
+    replayed: false,
+  });
+
+  it("reaches older records, deduplicates pages and retries the same failed cursor", async () => {
+    const first = capture("新记录"),
+      second = capture("旧记录");
+    const reads: string[] = [];
+    let fail = true;
+    const page = mount((options) => {
+      if (options.url.endsWith("/sections")) return success(options, []);
+      reads.push(options.url);
+      if (options.url.includes("?cursor=")) {
+        if (fail) {
+          fail = false;
+          options.fail({ errMsg: "offline" });
+        } else success(options, { items: [first, second], nextCursor: null });
+      } else success(options, { items: [first], nextCursor: "test-cursor" });
+    });
+    await page.refreshLists();
+    expect(page.data.capturesHasMore).toBe(true);
+    await page.loadMoreCaptures();
+    expect(page.data.capturesMoreError).not.toBe("");
+    expect(page.data.capturesLoading).toBe(false);
+    await page.loadMoreCaptures();
+    expect(reads.slice(-2)).toEqual([reads[1], reads[1]]);
+    expect(page.data.cards.map((card: any) => card.id)).toEqual([first.id, second.id]);
+    expect(page.data.capturesHasMore).toBe(false);
+    await page.refreshLists();
+    expect(page.data.cards.map((card: any) => card.id)).toEqual([first.id]);
+    expect(page.runtime.captureCursor).toBe("test-cursor");
+    page.onUnload();
+  });
+  it.each(["refresh", "logout"])("discards a late older-record page after %s", async (change) => {
+    const first = capture("第一条"),
+      old = capture("旧一条");
+    let later: any;
+    const page = mount((options) => {
+      if (options.url.endsWith("/sections")) success(options, []);
+      else if (options.url.includes("?cursor=")) later = options;
+      else success(options, { items: [first], nextCursor: "next" });
+    });
+    await page.refreshLists();
+    const loading = page.loadMoreCaptures();
+    await flushPage();
+    if (change === "refresh") await page.refreshLists();
+    else {
+      page.services.client.clear();
+      await flushPage();
+    }
+    success(later, { items: [old], nextCursor: null });
+    await loading;
+    expect(page.data.cards.some((card: any) => card.id === old.id)).toBe(false);
+    expect(page.data.capturesLoading).toBe(false);
+    page.onUnload();
+  });
+  it.each(["capture", "feedback"])(
+    "does not reinstall a stale %s key or reset a later busy operation",
+    async (kind) => {
+      let complete!: (key: string) => void;
+      let calls = 0;
+      const page = mount(() => {
+        calls++;
+      });
+      page.services.client.newKey = () =>
+        new Promise((resolve: any) => {
+          complete = resolve;
+        });
+      const current = now();
+      page.setData({
+        draft: "保留草稿",
+        sessionId: current.sessionId,
+        recommendation: current.recommendation,
+      });
+      const pending = kind === "capture" ? page.saveCapture() : page.feedback(event("SKIP"));
+      page.onHide();
+      page.setData({ busy: true });
+      // Feedback prepares two UUIDs; each should stop before preparing the next stale key.
+      const original = page.services.client.newKey;
+      page.services.client.newKey = async () => randomUUID();
+      complete(randomUUID());
+      await pending;
+      expect(page.runtime[kind === "capture" ? "capturePending" : "feedbackPending"]).toBeNull();
+      expect(page.data.busy).toBe(true);
+      expect(calls).toBe(0);
+      page.services.client.newKey = original;
+      page.onUnload();
+    },
+  );
+  it("does not apply an old owner's feedback receipt", async () => {
+    let later: any;
+    const page = mount((options) => {
+      later = options;
+    });
+    const current = now();
+    page.setData({ sessionId: current.sessionId, recommendation: current.recommendation });
+    const posting = page.feedback(event("REJECT"));
+    await flushPage();
+    page.services.client.clear();
+    await flushPage();
+    page.setData({ busy: true, notice: "新操作" });
+    success(later, feedbackReceipt("REJECT"));
+    await posting;
+    expect(page.data.notice).toBe("新操作");
+    expect(page.data.busy).toBe(true);
+    expect(page.runtime.feedbackReceipt).toBeNull();
+    page.onUnload();
+  });
+  it("reconciles a successful hidden completion on return without resending feedback or inventing elapsed time", async () => {
+    let later: any;
+    let posts = 0;
+    const page = mount((options) => {
+      if (options.url.endsWith("/feedback")) {
+        posts++;
+        later = options;
+      } else success(options, []);
+    });
+    const current = now();
+    page.setData({ sessionId: current.sessionId, recommendation: current.recommendation });
+    const posting = page.feedback(event("COMPLETE"));
+    await flushPage();
+    page.onHide();
+    success(later, feedbackReceipt("COMPLETE"));
+    await posting;
+    expect(page.data.recommendation).not.toBeNull();
+    expect(page.data.busy).toBe(false);
+    expect(page.runtime.feedbackReceipt).not.toBeNull();
+    page.onShow();
+    await flushPage();
+    expect(page.data.recommendation).toBeNull();
+    expect(page.data.notice).toBe("这一步完成了。");
+    expect(posts).toBe(1);
+    page.onUnload();
+  });
+  it("rejects blank and overlength text and clamps only user text editing", async () => {
+    let writes = 0;
+    const page = mount((options) => {
+      if (options.method === "POST") writes++;
+    });
+    for (const draft of ["   ", "字".repeat(5001)]) {
+      page.setData({ draft });
+      await page.saveCapture();
+      expect(page.data.error).toContain("5000");
+    }
+    expect(writes).toBe(0);
+    page.editDraft({ detail: { value: "字".repeat(5001) } });
+    expect(page.data.draft.length).toBe(5000);
+    page.onUnload();
+  });
+  it("preserves an existing image when native reselection is cancelled and posts only after confirmation", async () => {
+    let selected = 0,
+      writes = 0;
+    const png = "iVBORw0KGgo=";
+    const page = mount(
+      (options) => {
+        if (options.url.endsWith("/capabilities"))
+          success(options, {
+            text: true,
+            image: true,
+            voice: false,
+            provider: "test",
+            reason: null,
+          });
+        else if (options.method === "POST") {
+          writes++;
+          options.fail({ errMsg: "offline" });
+        } else success(options, []);
+      },
+      false,
+      "home",
+      {
+        chooseMedia: (options: any) => {
+          if (++selected === 1)
+            options.success({ tempFiles: [{ tempFilePath: "/local/photo.png", size: 8 }] });
+          else options.fail({ errMsg: "chooseMedia:fail cancel" });
+        },
+        getFileSystemManager: () => ({
+          readFile: (options: any) => options.success({ data: png }),
+        }),
+      },
+    );
+    page.setData({ sheet: true });
+    await page.chooseImage();
+    await page.chooseImage();
+    expect(page.data.imagePath).toBe("/local/photo.png");
+    expect(page.runtime.image.base64).toBe(png);
+    expect(writes).toBe(0);
+    await page.saveCapture();
+    expect(writes).toBe(1);
+    expect(page.data.imagePath).toBe("/local/photo.png");
+    expect(page.runtime.capturePending).not.toBeNull();
+    page.removeImage();
+    expect(page.runtime.image).toBeNull();
+    expect(page.data.imagePath).toBe("");
+    page.onUnload();
+  });
+  it("offers permission settings and ignores its late response after logout", async () => {
+    let permission: any, opened: any;
+    const page = mount(() => {}, false, "home", {
+      authorize: (options: any) => {
+        permission = options;
+      },
+      openSetting: (options: any) => {
+        opened = options;
+      },
+    });
+    page.chooseVoice();
+    permission.fail();
+    expect(page.data.capturePermission).toBe("scope.record");
+    page.openCapturePermissions();
+    expect(opened).toBeDefined();
+    page.services.client.clear();
+    await flushPage();
+    opened.success({ authSetting: { "scope.record": true } });
+    expect(page.data.notice).toBe("");
+    expect(page.data.capturePermission).toBe("");
+    page.onUnload();
+  });
+});
+
+describe("Home location preference and return readback", () => {
+  function ready(page: any) {
+    const sessionId = randomUUID(),
+      target = randomUUID();
+    page.setData({
+      sessionId,
+      recommendation: { targetLifeObjectId: target },
+      canVerifyRoute: true,
+      hasConfirmedDestination: true,
+    });
+    return sessionId;
+  }
+  it.each([false, true])(
+    "uses GPS only after the route action and honors useLocation=%s",
+    async (allowed) => {
+      let locations = 0;
+      const page = mount(() => {}, false, "home", {
+        request: (options: any) =>
+          success(
+            options,
+            userSettingsResponseSchema.parse({
+              recommendation: {},
+              privacy: { useLocation: allowed },
+              notifications: {},
+              onboardingCompleted: true,
+              updatedAt: null,
+            }),
+          ),
+        getLocation: ({ fail }: any) => {
+          locations++;
+          fail({ errMsg: "denied" });
+        },
+      });
+      ready(page);
+      expect(locations).toBe(0);
+      await page.verifyCurrentRoute();
+      expect(locations).toBe(allowed ? 1 : 0);
+      expect(page.data.locationSheet).toBe(!allowed);
+      if (!allowed) {
+        await page.confirmRouteLocation();
+        expect(locations).toBe(1);
+        expect(page.data.locationSheet).toBe(false);
+      }
+      page.onUnload();
+    },
+  );
+  it.each(["offline", "hide", "logout"])(
+    "makes no GPS request after a %s settings read",
+    async (change) => {
+      let settings: any;
+      const page = mount(() => {}, false, "home", {
+        request: (options: any) => {
+          settings = options;
+        },
+      });
+      ready(page);
+      const checking = page.verifyCurrentRoute();
+      await flushPage();
+      if (change === "offline") settings.fail({ errMsg: "offline" });
+      else {
+        if (change === "hide") page.onHide();
+        else {
+          page.services.client.clear();
+          await flushPage();
+        }
+        success(
+          settings,
+          userSettingsResponseSchema.parse({
+            recommendation: {},
+            privacy: { useLocation: true },
+            notifications: {},
+            onboardingCompleted: true,
+            updatedAt: null,
+          }),
+        );
+      }
+      await checking;
+      expect(page.locationCalls()).toBe(0);
+      expect(page.data.busy).toBe(false);
+      page.onUnload();
+    },
+  );
+  it("reads the current session after detail return and removes a source that is no longer recommended", async () => {
+    let reads = 0;
+    let sessionId = "";
+    const page = mount((options) => {
+      if (options.url.endsWith(`/now/sessions/${sessionId}`)) {
+        reads++;
+        success(options, {
+          sessionId,
+          status: "QUIET",
+          replayed: false,
+          recommendation: null,
+          candidates: [],
+          question: null,
+        });
+      } else success(options, []);
+    });
+    sessionId = ready(page);
+    page.viewLifeItem({ currentTarget: { dataset: { id: randomUUID() } } });
+    page.onHide();
+    page.onShow();
+    await flushPage();
+    expect(reads).toBe(1);
+    expect(page.data.recommendation).toBeNull();
+    expect(page.data.canVerifyRoute).toBe(false);
+    expect(page.data.sessionId).toBe("");
+    page.onUnload();
+  });
+  it("reuses the same conditioned Now idempotency key after a failed request", async () => {
+    const writes: any[] = [];
+    const page = mount((options) => {
+      if (options.method !== "POST") return success(options, []);
+      writes.push(options);
+      if (writes.length === 1) options.fail({ errMsg: "offline" });
+      else
+        success(options, {
+          sessionId: randomUUID(),
+          status: "QUIET",
+          replayed: true,
+          recommendation: null,
+          candidates: [],
+          question: null,
+        });
+    });
+    page.setData({
+      conditionGoingOut: "no",
+      conditionMinutes: "30",
+      conditionBudget: "0",
+      conditionsSheet: true,
+    });
+    await page.applyConditions();
+    expect(page.data.busy).toBe(false);
+    await page.decide();
+    expect(writes).toHaveLength(2);
+    expect(writes[0].data.context).toEqual({
+      availableMinutes: 30,
+      budgetMinor: 0,
+      willingToGoOut: false,
+    });
+    expect(writes[0].header["idempotency-key"]).toBe(writes[1].header["idempotency-key"]);
+    expect(page.runtime.nextDecisionContext).toBeNull();
+    expect(page.data.decided).toBe(true);
+    page.onUnload();
+  });
+});
+
+describe("Native image picker lifecycle", () => {
+  it.each(["return", "logout", "unload"])(
+    "handles a camera/album selection after %s without automatic submission",
+    async (change) => {
+      let picker: any;
+      let writes = 0;
+      const page = mount(
+        (options) => {
+          if (options.url.endsWith("/capabilities"))
+            success(options, {
+              text: true,
+              image: true,
+              voice: false,
+              provider: "test",
+              reason: null,
+            });
+          else if (options.method === "POST") writes++;
+          else success(options, []);
+        },
+        false,
+        "home",
+        {
+          chooseMedia: (options: any) => {
+            picker = options;
+          },
+          getFileSystemManager: () => ({
+            readFile: ({ success }: any) => success({ data: "iVBORw0KGgo=" }),
+          }),
+        },
+      );
+      page.setData({ sheet: true });
+      const choosing = page.chooseImage();
+      await flushPage();
+      page.onHide();
+      if (change === "logout") {
+        page.services.client.clear();
+        await flushPage();
+      }
+      if (change === "unload") page.onUnload();
+      picker.success({ tempFiles: [{ tempFilePath: "/local/returned.png", size: 8 }] });
+      await choosing;
+      if (change === "return") {
+        page.onShow();
+        expect(page.data.imagePath).toBe("/local/returned.png");
+        expect(page.data.sheet).toBe(true);
+        expect(page.data.imageLoading).toBe(false);
+      } else expect(page.runtime.image).toBeNull();
+      expect(writes).toBe(0);
+      page.onUnload();
+    },
+  );
+});
+
+it("shows distinct raw-text titles for unorganized records without changing original text", async () => {
+  const texts = ["第一条记录\n第二行还要保留", "😀".repeat(55) + "\n尾行"];
+  const items = texts.map((text, index) => ({
+    id: randomUUID(),
+    type: "TEXT",
+    status: index === 0 ? "FAILED" : "NEEDS_REVIEW",
+    text,
+    title: null,
+    summary: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }));
+  items.push({ ...items[0], id: randomUUID(), type: "IMAGE", text: "", status: "PROCESSING" });
+  const page = mount((options) =>
+    success(options, options.url.endsWith("/sections") ? [] : { items, nextCursor: null }),
+  );
+  await page.refreshLists();
+  expect(page.data.cards.map((card: any) => card.title)).toEqual([
+    "第一条记录",
+    "😀".repeat(48) + "…",
+    "留下一张图片",
+  ]);
+  expect(page.data.cards[0].summary).toContain("原始内容已保留");
+  page.viewCapture({ currentTarget: { dataset: { id: items[1].id } } });
+  expect(page.data.captureReview.original).toBe(texts[1]);
+  expect(page.data.captures[1].text).toBe(texts[1]);
+  page.onUnload();
+});
+
+it("replaces the superseded failed draft card so its retry cannot silently submit another draft", async () => {
+  const page = mount((options) => {
+    if (options.method === "POST") options.fail({ errMsg: "offline" });
+    else success(options, []);
+  });
+  page.setData({ draft: "第一次草稿" });
+  await page.saveCapture();
+  page.setData({ draft: "修改后的草稿" });
+  await page.saveCapture();
+  const failures = page.data.cards.filter((card: any) => card.phase === "FAILED_LOCAL");
+  expect(failures).toHaveLength(1);
+  expect(failures[0].original).toBe("修改后的草稿");
+  page.viewCapture({ currentTarget: { dataset: { id: failures[0].id } } });
+  expect(page.data.captureReview.original).toBe("修改后的草稿");
+  page.onUnload();
+});
+
+describe("returning sessions and first-use setup", () => {
+  it("checks onboarding for a restored login and retries a failed read on return", async () => {
+    let reads = 0;
+    const page = mount(() => {}, false, "home", {
+      request: (options: any) => {
+        if (options.url.endsWith("/v1/settings")) {
+          if (++reads === 1) options.fail({ errMsg: "offline" });
+          else
+            success(
+              options,
+              userSettingsResponseSchema.parse({
+                recommendation: {},
+                privacy: {},
+                notifications: {},
+                onboardingCompleted: false,
+                updatedAt: null,
+              }),
+            );
+        } else if (options.url.includes("/v1/captures/page"))
+          success(options, { items: [], nextCursor: null });
+        else success(options, []);
+      },
+    });
+    const flush = async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+    page.onShow();
+    await flush();
+    expect(page.data.onboardingError).not.toBe("");
+    expect(page.navigations).toEqual([]);
+    page.onHide();
+    page.onShow();
+    await flush();
+    expect(reads).toBe(2);
+    expect(page.navigations).toEqual(["/pages/onboarding/index"]);
+    await page.checkOnboarding();
+    expect(reads).toBe(2);
     page.onUnload();
   });
 });

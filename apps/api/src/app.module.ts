@@ -26,11 +26,17 @@ import { NowService } from "./now/now.service.js";
 import { FeedbackController } from "./feedback/feedback.controller.js";
 import { FeedbackService } from "./feedback/feedback.service.js";
 import { HealthController } from "./health.controller.js";
+import { ProfileController } from "./users/profile.controller.js";
+import { ProfileService } from "./users/profile.service.js";
+import { SettingsController } from "./settings/settings.controller.js";
+import { SettingsService } from "./settings/settings.service.js";
+import { UiCapabilitiesController } from "./settings/ui-capabilities.controller.js";
 
 @Module({
   imports: [DatabaseModule],
   controllers: [
     AuthController,
+    ProfileController,
     MediaController,
     CapturesController,
     LifeController,
@@ -39,11 +45,14 @@ import { HealthController } from "./health.controller.js";
     ContextController,
     FeedbackController,
     HealthController,
+    SettingsController,
+    UiCapabilitiesController,
   ],
   providers: [
     IdempotencyService,
     AuthGuard,
     AuthService,
+    ProfileService,
     CapturesService,
     LifeService,
     PlaceLocationService,
@@ -53,6 +62,7 @@ import { HealthController } from "./health.controller.js";
     BuildDecisionContextService,
     ActionPlanService,
     FeedbackService,
+    SettingsService,
   ],
 })
 export class AppModule {

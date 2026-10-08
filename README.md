@@ -24,6 +24,8 @@ pnpm db:migrate
 
 ### 微信小程序
 
+新用户版已整合个人资料、四步偏好问卷、跳过状态持久化和空白记录引导。用户可从设置修改资料或重填问卷；未接入的票券核验与消息提醒不展示为可用操作。发布候选的配置、数据迁移和当前上线状态见[新用户使用流程与发布准备](docs/new-user-release-2026-10-08.md)。生产构建使用 `pnpm build:miniprogram:release`，必须提供 production 配置。
+
 执行 `pnpm build:miniprogram` 后，在微信开发者工具中导入 `apps/miniprogram/dist`。无 AppID 时可先显式配置本地模拟登录；默认不会自动回退。配置步骤、真机接入条件及人工验收项目见[微信接入说明](docs/wechat-setup.md)，分阶段安排见[开发计划](docs/wechat-integration-plan.md)。
 
 ### 共同开发
