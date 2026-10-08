@@ -726,3 +726,43 @@ describe("native life list and detail closed flows", () => {
     page.onUnload();
   });
 });
+
+it("renders real owned source photos on list cards and restores them after returning to the list", async () => {
+  const captureId = randomUUID(),
+    item = {
+      id: randomUUID(),
+      title: "阅读角照片",
+      summary: "原始图片记录",
+      kind: "MEDIA",
+      status: "ACTIVE",
+      importance: null,
+      createdAt: new Date().toISOString(),
+      searchText: null,
+      displayKind: null,
+      nextAt: null,
+      expiresAt: null,
+      hasLocation: false,
+      distanceMeters: null,
+      imageCaptureId: captureId,
+    };
+  const page = mount("life-list", (options) => {
+    if (options.url.endsWith(`/captures/${captureId}/image`))
+      success(options, { image: { mimeType: "image/png", base64: "iVBORw0KGgo=" } });
+    else success(options, { items: [item], nextCursor: null });
+  });
+  await flush();
+  await page.loadItemImages();
+  const first = page.data.items[0].imagePath;
+  expect(first).toContain("/user-data/kairos-image-");
+  page.onHide();
+  page.onShow();
+  await flush();
+  await page.loadItemImages();
+  expect(page.data.items[0].imagePath).toContain("/user-data/kairos-image-");
+  expect(page.data.items[0].imagePath).not.toBe(first);
+  page.services.client.clear();
+  await flush();
+  expect(page.data.items).toEqual([]);
+  expect(page.removedFiles).toContain(first);
+  page.onUnload();
+});

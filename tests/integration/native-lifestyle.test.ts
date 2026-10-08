@@ -487,3 +487,54 @@ describe("native lifestyle API integration", () => {
     ).toMatchObject({ status: "ACTIVE", object_version: 1 });
   });
 });
+
+it("attaches an owned image cover to sections, search, ranked decks and detail even after several text sources", async () => {
+  const owner = await login(),
+    other = await login();
+  const objectId = await lifeObject(owner, "有原始图片的生活记录");
+  const foreignObject = await lifeObject(other, "另一位用户的图片记录");
+  const image = { mimeType: "image/png", base64: "iVBORw0KGgoAAAAA" };
+  const response = await request("POST", "/v1/captures", owner, {
+    type: "IMAGE",
+    image,
+    sourceChannel: "MINIPROGRAM",
+  });
+  expect(response.statusCode).toBe(201);
+  const captureId = response.json().data.captureId;
+  for (let n = 0; n < 5; n++) {
+    const text = await request("POST", "/v1/captures", owner, {
+      type: "TEXT",
+      text: "文字来源" + n,
+    });
+    await pool.query(
+      "INSERT INTO life_object_sources(id,user_id,life_object_id,source_type,source_id,is_primary,confidence) VALUES($1,$2,$3,'CAPTURE',$4,true,1)",
+      [randomUUID(), owner.userId, objectId, text.json().data.captureId],
+    );
+  }
+  await pool.query(
+    "INSERT INTO life_object_sources(id,user_id,life_object_id,source_type,source_id,is_primary,confidence) VALUES($1,$2,$3,'CAPTURE',$4,false,1),($5,$6,$7,'CAPTURE',$4,true,1)",
+    [randomUUID(), owner.userId, objectId, captureId, randomUUID(), other.userId, foreignObject],
+  );
+  const owned = (await request("GET", `/v1/life/${objectId}`, owner)).json().data;
+  expect(owned.imageCaptureId).toBe(captureId);
+  expect((await search(owner, "有原始图片")).items[0].imageCaptureId).toBe(captureId);
+  const sections = (await request("GET", "/v1/life/sections", owner)).json().data;
+  expect(
+    sections.flatMap((section: any) => section.items).find((item: any) => item.id === objectId)
+      .imageCaptureId,
+  ).toBe(captureId);
+  const deck = (await request("POST", "/v1/life/deck", owner, { kind: "MEDIA", limit: 10 })).json()
+    .data;
+  expect(deck.items.find((item: any) => item.id === objectId).imageCaptureId).toBe(captureId);
+  expect(
+    (await request("GET", `/v1/life/${foreignObject}`, other)).json().data.imageCaptureId,
+  ).toBeNull();
+  expect((await request("GET", `/v1/captures/${captureId}/image`, other)).statusCode).toBe(404);
+  await pool.query(
+    "UPDATE capture_assets SET retain_until=now()-interval '1 second' WHERE capture_id=$1",
+    [captureId],
+  );
+  expect(
+    (await request("GET", `/v1/life/${objectId}`, owner)).json().data.imageCaptureId,
+  ).toBeNull();
+});

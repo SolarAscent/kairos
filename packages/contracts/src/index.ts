@@ -571,6 +571,7 @@ export const nowResponseSchema = z.object({
 });
 
 export const lifeListItemSchema = z.object({
+  imageCaptureId: uuidSchema.nullable().optional(),
   id: uuidSchema,
   title: z.string(),
   summary: z.string().nullable(),
@@ -669,6 +670,7 @@ export type NowResponse = z.infer<typeof nowResponseSchema>;
 
 export const lifeDetailResponseSchema = z
   .object({
+    imageCaptureId: uuidSchema.nullable().optional(),
     id: uuidSchema,
     title: z.string(),
     summary: z.string().nullable(),

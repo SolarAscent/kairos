@@ -1,6 +1,18 @@
 import { createHash } from "node:crypto";
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  getTableColumns,
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import {
   lifeSectionSchema,
@@ -34,6 +46,7 @@ import { verifiedDestinationForObject, userSelectedDestinationForObject } from "
 import { IdempotencyService } from "../common/idempotency.service.js";
 import { DATABASE } from "../common/tokens.js";
 import { PreferenceReader } from "../feedback/preference-reader.js";
+import { lifeImageCaptureId } from "./life-image.js";
 import { LifeDeckReader } from "./life-deck-reader.js";
 
 type LifeTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -44,6 +57,7 @@ const cursorSchema = z.object({
   signature: z.string().length(43),
 });
 const listFields = {
+  imageCaptureId: lifeImageCaptureId(sql`${lifeObjects.id}`, sql`${lifeObjects.userId}`),
   id: lifeObjects.id,
   title: lifeObjects.title,
   summary: lifeObjects.summary,
@@ -594,7 +608,10 @@ export class LifeService {
 
   async get(userId: string, id: string) {
     const [object] = await this.db
-      .select()
+      .select({
+        ...getTableColumns(lifeObjects),
+        imageCaptureId: lifeImageCaptureId(sql`${lifeObjects.id}`, sql`${lifeObjects.userId}`),
+      })
       .from(lifeObjects)
       .where(
         and(eq(lifeObjects.userId, userId), eq(lifeObjects.id, id), isNull(lifeObjects.deletedAt)),

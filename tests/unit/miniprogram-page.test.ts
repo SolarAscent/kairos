@@ -2443,7 +2443,7 @@ describe("Home context and multimodal input interactions", () => {
     );
     page.setData({ draft: "没有提交的原文" });
     await page.chooseImage();
-    expect(page.data.error).toContain("尚未配置");
+    expect(page.data.error).toContain("当前微信版本");
     page.chooseVoice();
     await page.voiceTouchStart({ touches: [{ clientY: 300 }] });
     expect(page.data.error).toContain("尚未配置");
@@ -3225,4 +3225,46 @@ describe("returning sessions and first-use setup", () => {
     expect(reads).toBe(2);
     page.onUnload();
   });
+});
+
+it("restores every image after the twelfth journal record instead of silently truncating the gallery", async () => {
+  const images = Array.from({ length: 17 }, (_, n) => ({
+    id: randomUUID(),
+    type: "IMAGE",
+    status: "READY",
+    text: "记录" + n,
+    title: "图片" + n,
+    summary: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }));
+  const requested: string[] = [];
+  const page = mount(
+    (options) => {
+      if (options.url.endsWith("/captures/page"))
+        success(options, { items: images, nextCursor: null });
+      else if (options.url.endsWith("/image")) {
+        requested.push(options.url);
+        success(options, { image: { mimeType: "image/png", base64: "iVBORw0KGgo=" } });
+      } else success(options, []);
+    },
+    false,
+    "home",
+    {
+      env: { USER_DATA_PATH: "/native" },
+      getFileSystemManager: () => ({
+        readdirSync: () => [],
+        writeFile: ({ success }: any) => success(),
+        unlink: () => {},
+      }),
+    },
+  );
+  await page.refreshLists();
+  await page.loadJournalImages();
+  expect(page.data.cards).toHaveLength(17);
+  expect(
+    page.data.cards.every((card: any) => card.imagePath.startsWith("/native/kairos-image-")),
+  ).toBe(true);
+  expect(new Set(requested).size).toBe(17);
+  page.onUnload();
 });

@@ -291,7 +291,7 @@
             bindtap="viewLifeItem"
             aria-role="button"
             aria-label="查看{{item.title}}"
-            ><text wx:if="{{item.placeLabel}}" class="life-place">{{item.placeLabel}}</text
+            ><image wx:if="{{item.imagePath}}" src="{{item.imagePath}}" mode="aspectFill" class="life-cover" lazy-load /><text wx:if="{{item.placeLabel}}" class="life-place">{{item.placeLabel}}</text
             ><text class="item-title">{{item.title}}</text
             ><text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text
             ><view class="life-item-footer"

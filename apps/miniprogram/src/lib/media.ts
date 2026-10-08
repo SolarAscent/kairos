@@ -5,6 +5,7 @@ import { voiceConnectionErrorCode } from "./errors";
 
 export { mediaCapabilitiesSchema as capabilitiesSchema } from "@life/contracts";
 import {
+  MAX_IMAGE_BYTES,
   voiceSessionResponseSchema as voiceSessionSchema,
   voiceServerEventSchema as voiceEventSchema,
 } from "@life/contracts";
@@ -29,10 +30,13 @@ export async function chooseCaptureImage(): Promise<CaptureImage | null> {
   );
   const file = selected?.tempFiles[0];
   if (!file) return null;
-  if (file.size > 2 * 1024 * 1024) throw new ClientError("IMAGE_TOO_LARGE");
+  return prepareCaptureImage(file.tempFilePath, file.size);
+}
+
+async function readImageFile(path: string) {
   const base64 = await new Promise<string>((resolve, reject) => {
     wx.getFileSystemManager().readFile({
-      filePath: file.tempFilePath,
+      filePath: path,
       encoding: "base64",
       success: ({ data }) =>
         typeof data === "string" ? resolve(data) : reject(new ClientError("IMAGE_READ_FAILED")),
@@ -42,14 +46,56 @@ export async function chooseCaptureImage(): Promise<CaptureImage | null> {
   const bytes =
     Math.floor((base64.length * 3) / 4) -
     (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
-  if (bytes > 2 * 1024 * 1024) throw new ClientError("IMAGE_TOO_LARGE");
   const mimeType = base64.startsWith("/9j/")
-    ? "image/jpeg"
+    ? ("image/jpeg" as const)
     : base64.startsWith("iVBORw0KGgo")
-      ? "image/png"
+      ? ("image/png" as const)
       : null;
-  if (!mimeType) throw new ClientError("IMAGE_FORMAT_UNSUPPORTED");
-  return { mimeType, base64, path: file.tempFilePath };
+  return { base64, bytes, mimeType };
+}
+
+/** Keep readable small originals; normalize larger phone photos before uploading. */
+export async function prepareCaptureImage(path: string, reportedBytes = 0): Promise<CaptureImage> {
+  let oversized = reportedBytes > MAX_IMAGE_BYTES;
+  if (reportedBytes <= MAX_IMAGE_BYTES) {
+    const original = await readImageFile(path);
+    oversized = original.bytes > MAX_IMAGE_BYTES;
+    if (original.bytes <= MAX_IMAGE_BYTES && original.mimeType)
+      return { mimeType: original.mimeType, base64: original.base64, path };
+  }
+  if (typeof wx.getImageInfo !== "function" || typeof wx.compressImage !== "function")
+    throw new ClientError(oversized ? "IMAGE_TOO_LARGE" : "IMAGE_FORMAT_UNSUPPORTED");
+  const info = await new Promise<WechatMiniprogram.GetImageInfoSuccessCallbackResult>(
+    (resolve, reject) =>
+      wx.getImageInfo({
+        src: path,
+        success: resolve,
+        fail: () => reject(new ClientError("IMAGE_FORMAT_UNSUPPORTED")),
+      }),
+  );
+  if (!(info.width > 0 && info.height > 0)) throw new ClientError("IMAGE_READ_FAILED");
+  for (const [edge, quality] of [
+    [2560, 85],
+    [1920, 75],
+    [1280, 60],
+    [960, 45],
+  ] as const) {
+    const scale = Math.min(1, edge! / Math.max(info.width, info.height));
+    const compressed = await new Promise<string>((resolve, reject) =>
+      wx.compressImage({
+        src: path,
+        quality,
+        compressedWidth: Math.max(1, Math.round(info.width * scale)),
+        compressedHeight: Math.max(1, Math.round(info.height * scale)),
+        success: (result) => resolve(result.tempFilePath),
+        fail: () => reject(new ClientError("IMAGE_PROCESSING_FAILED")),
+      }),
+    );
+    const result = await readImageFile(compressed);
+    if (result.mimeType && result.bytes <= MAX_IMAGE_BYTES)
+      return { mimeType: result.mimeType, base64: result.base64, path: compressed };
+  }
+  throw new ClientError("IMAGE_TOO_LARGE");
 }
 
 type VoiceEvent = z.infer<typeof voiceEventSchema>;
