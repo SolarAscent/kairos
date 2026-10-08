@@ -110,6 +110,25 @@ afterAll(async () => {
 });
 
 describe("native lifestyle API integration", () => {
+  it("starts a new account with empty records and persists skipped onboarding across login", async () => {
+    const code = randomUUID();
+    const fresh = (await request("POST", "/v1/auth/wechat/login", undefined, { code })).json().data;
+    const original = await settings(fresh);
+    expect(original.onboardingCompleted).toBe(false);
+    expect((await request("GET", "/v1/captures/page", fresh)).json().data.items).toEqual([]);
+    expect((await request("GET", "/v1/life/stacks", fresh)).json().data).toEqual([]);
+    expect((await request("GET", "/v1/users/me", fresh)).json().data.nickname).toBeNull();
+    const skip = await request("POST", "/v1/settings/update", fresh, { onboardingCompleted: true });
+    expect(skip.statusCode).toBe(200);
+    const returning = (await request("POST", "/v1/auth/wechat/login", undefined, { code })).json()
+      .data;
+    expect(returning.userId).toBe(fresh.userId);
+    const saved = await settings(returning);
+    expect(saved.onboardingCompleted).toBe(true);
+    expect(saved.recommendation).toEqual(original.recommendation);
+    expect(saved.privacy).toEqual(original.privacy);
+    expect((await settings(await login())).onboardingCompleted).toBe(false);
+  });
   it("isolates settings and replays a lost PATCH response without resetting later changes", async () => {
     const owner = await login(),
       other = await login();

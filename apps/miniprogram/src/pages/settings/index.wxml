@@ -5,6 +5,10 @@
       <view class="intro"><text class="headline">生活节奏与尺度</text><text class="copy">行动建议会参考时间、预算和出门意愿；区域名称仅作文字偏好，不会自动定位。</text></view>
       <text wx:if="{{!loaded && !error}}" class="message">正在读取设定…</text>
       <button wx:if="{{error && !loaded}}" class="retry" bindtap="load" loading="{{busy}}" disabled="{{busy}}">重新读取</button>
+      <view class="group"><text class="group-title">我的资料</text>
+        <button class="row" bindtap="openProfile" disabled="{{!loaded}}"><view class="row-copy"><text class="row-title">头像、昵称与个人简介</text><text class="row-value">由你填写，可随时修改</text></view><text class="chevron">›</text></button>
+        <button class="row" bindtap="openOnboarding" disabled="{{!loaded}}"><view class="row-copy"><text class="row-title">重新填写偏好问卷</text><text class="row-value">调整日常时间、预算和放松方式</text></view><text class="chevron">›</text></button>
+      </view>
 
       <view class="group"><text class="group-title">生活推荐偏好</text>
         <button class="row" data-field="relaxation" bindtap="openSheet"><view class="row-copy"><text class="row-title">放松方式</text><text class="row-value">{{relaxationLabel}}</text></view><text class="chevron">›</text></button>
@@ -19,7 +23,7 @@
       </view>
 
       <view class="group"><text class="group-title">外观与体验</text>
-        <view class="row read-row"><view class="row-copy"><text class="row-title">主题外观</text><text class="row-value">暖调手账 · 新主题待接入</text></view></view>
+        <view class="row read-row"><view class="row-copy"><text class="row-title">主题外观</text><text class="row-value">暖调手账</text></view></view>
         <view class="row"><view class="row-copy"><text class="row-title">弱化动效</text><text class="row-value">{{reduceMotion ? '已开启' : '已关闭'}}</text></view><switch checked="{{reduceMotion}}" bindchange="toggleMotion" color="#A95F3F" /></view>
       </view>
 
@@ -27,9 +31,10 @@
         <view class="row"><view class="row-copy"><text class="row-title">用于路线核对的位置</text><text class="row-value">开启后可在核对路程时获取</text></view><switch checked="{{useLocation}}" data-field="useLocation" bindchange="togglePreference" color="#A95F3F" /></view>
         <button class="row" bindtap="openPermissions"><view class="row-copy"><text class="row-title">定位权限说明</text><text class="row-value">仅按你的操作请求，不自动读取</text></view><text class="chevron">›</text></button>
         <button class="row" bindtap="openPermissions"><view class="row-copy"><text class="row-title">麦克风权限</text><text class="row-value">用于语音记录转写</text></view><text class="chevron">›</text></button>
-        <view class="row"><view class="row-copy"><text class="row-title">提醒偏好</text><text class="row-value">{{notificationsEnabled ? '已记录偏好 · 推送服务待接入' : '推送服务待接入'}}</text></view><switch checked="{{notificationsEnabled}}" data-field="notificationsEnabled" bindchange="togglePreference" color="#A95F3F" /></view>
+        <view wx:if="{{reminderAvailable}}" class="row"><view class="row-copy"><text class="row-title">消息提醒</text><text class="row-value">{{notificationsEnabled ? '已开启' : '已关闭'}}</text></view><switch checked="{{notificationsEnabled}}" data-field="notificationsEnabled" bindchange="togglePreference" color="#A95F3F" /></view>
+        <button class="row" bindtap="openPrivacy"><view class="row-copy"><text class="row-title">隐私保护指引</text><text class="row-value">了解资料、记录与权限的使用方式</text></view><text class="chevron">›</text></button>
         <button class="row" bindtap="clearCache" loading="{{cacheBusy}}" disabled="{{cacheBusy}}"><view class="row-copy"><text class="row-title">清除图片缓存</text><text class="row-value">只清除本机临时预览文件</text></view><text class="chevron">›</text></button>
-        <button class="row" bindtap="exportRecords" loading="{{exportBusy}}" disabled="{{exportBusy}}"><view class="row-copy"><text class="row-title">导出记录</text><text class="row-value">{{exportStatus || '导出服务待接入'}}</text></view><text class="chevron">›</text></button>
+        <button class="row" bindtap="exportRecords" loading="{{exportBusy}}" disabled="{{exportBusy || !exportAvailable}}"><view class="row-copy"><text class="row-title">导出记录</text><text class="row-value">{{exportStatus}}</text></view><text class="chevron">›</text></button>
       </view>
 
       <text wx:if="{{error}}" class="error">{{error}}</text><text wx:if="{{status}}" class="status">{{status}}</text>

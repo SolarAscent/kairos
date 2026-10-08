@@ -15,6 +15,8 @@ try {
   raw = await readFile(resolve(root, "config.example.json"), "utf8");
 }
 const config = validateConfig(JSON.parse(raw));
+if (process.argv.includes("--release") && config.environment !== "production")
+  throw new Error("RELEASE_REQUIRES_PRODUCTION_CONFIG");
 console.log(
   `Mini Program: ${config.environment}, ${config.loginMode}, ${config.appId === "touristappid" ? "AppID pending" : "AppID configured"}`,
 );
@@ -94,7 +96,8 @@ try {
     JSON.stringify(
       {
         description: "KAIROS 原生微信客户端",
-        projectname: "kairos-" + config.environment,
+        projectname:
+          config.environment === "production" ? "kairos" : "kairos-" + config.environment,
         appid: config.appId,
         compileType: "miniprogram",
         miniprogramRoot: "./",

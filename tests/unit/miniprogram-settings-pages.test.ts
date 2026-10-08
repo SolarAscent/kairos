@@ -107,7 +107,19 @@ function mount(
         getRandomValues: ({ success: done }: any) =>
           done({ randomValues: new Uint8Array(randomBytes(16)).buffer }),
         nextTick: (callback: () => void) => Promise.resolve().then(callback),
-        request: send,
+        request: (options: any) => {
+          if (options.url.endsWith("/v1/users/me") && options.method === "GET")
+            success(options, {
+              userId,
+              nickname: null,
+              bio: "",
+              avatarVersion: null,
+              identityProvider: "WECHAT",
+              createdAt: "2026-10-08T00:00:00.000Z",
+              updatedAt: "2026-10-08T00:00:00.000Z",
+            });
+          else send(options);
+        },
         getFileSystemManager: () => fileSystem,
         navigateTo: ({ url }: any) => navigations.push(url),
         redirectTo: ({ url }: any) => navigations.push(url),
@@ -143,6 +155,71 @@ async function flush() {
 }
 
 describe("compiled settings, onboarding, and life-detail pages", () => {
+  it("keeps onboarding unfinished after a lost save and retries the same operation without resaving the nickname", async () => {
+    const profileWrites: any[] = [];
+    const settingsWrites: any[] = [];
+    const page = mount("onboarding", (options) => {
+      if (options.method === "GET") success(options, settings());
+      else if (options.url.endsWith("/v1/users/me/profile")) {
+        profileWrites.push(options);
+        success(options, {
+          userId,
+          nickname: options.data.nickname,
+          bio: "",
+          avatarVersion: null,
+          identityProvider: "WECHAT",
+          createdAt: "2026-10-08T00:00:00.000Z",
+          updatedAt: "2026-10-08T00:00:00.000Z",
+        });
+      } else {
+        settingsWrites.push(options);
+        if (settingsWrites.length === 1) options.fail({ errMsg: "response lost" });
+        else success(options, { ...settings(), onboardingCompleted: true });
+      }
+    });
+    page.onShow();
+    await flush();
+    page.editNickname({ detail: { value: "小林" } });
+    page.select({ currentTarget: { dataset: { field: "relaxation", value: "QUIET" } } });
+    await page.finish();
+    expect(page.navigations).toEqual([]);
+    expect(page.data.nickname).toBe("小林");
+    expect(page.data.error).not.toBe("");
+    await page.finish();
+    expect(profileWrites).toHaveLength(1);
+    expect(settingsWrites).toHaveLength(2);
+    expect(settingsWrites[1].header["X-Idempotency-Key"]).toBe(
+      settingsWrites[0].header["X-Idempotency-Key"],
+    );
+    expect(settingsWrites[1].data.recommendation.relaxation).toBe("QUIET");
+    expect(page.navigations).toEqual(["/pages/home/index"]);
+    page.onUnload();
+  });
+  it("persists only completion when skipping and retains its key after a network failure", async () => {
+    const writes: any[] = [];
+    const page = mount("onboarding", (options) => {
+      if (options.method === "GET") success(options, settings());
+      else {
+        writes.push(options);
+        if (writes.length === 1) options.fail({ errMsg: "offline" });
+        else success(options, { ...settings(), onboardingCompleted: true });
+      }
+    });
+    page.onShow();
+    await flush();
+    page.editNickname({ detail: { value: "不应保存的草稿" } });
+    page.select({ currentTarget: { dataset: { field: "defaultBudget", value: "100" } } });
+    await page.skip();
+    expect(page.navigations).toEqual([]);
+    await page.skip();
+    expect(writes.map((item) => item.data)).toEqual([
+      { onboardingCompleted: true },
+      { onboardingCompleted: true },
+    ]);
+    expect(writes[1].header["X-Idempotency-Key"]).toBe(writes[0].header["X-Idempotency-Key"]);
+    expect(page.navigations).toEqual(["/pages/home/index"]);
+    page.onUnload();
+  });
   it("retries a lost settings response with the same PATCH idempotency key and blocks duplicates", async () => {
     const requests: any[] = [];
     const writes: any[] = [];
@@ -320,7 +397,7 @@ describe("compiled settings, onboarding, and life-detail pages", () => {
     onboarding.onUnload();
   });
 
-  it("writes the full onboarding draft on completion and lets Skip work after a failed read", async () => {
+  it("writes the full onboarding draft on completion and persists Skip without overwriting preferences after a failed read", async () => {
     const writes: any[] = [];
     const page = mount("onboarding", (options) => {
       if (options.method === "GET") success(options, settings());
@@ -371,14 +448,18 @@ describe("compiled settings, onboarding, and life-detail pages", () => {
     let skippedWrites = 0;
     const skipped = mount("onboarding", (options) => {
       if (options.method === "GET") options.fail({ errMsg: "offline" });
-      else skippedWrites++;
+      else {
+        skippedWrites++;
+        expect(options.data).toEqual({ onboardingCompleted: true });
+        success(options, { ...settings(), onboardingCompleted: true });
+      }
     });
     skipped.onShow();
     await flush();
     expect(skipped.data.loaded).toBe(false);
     expect(skipped.data.error).not.toBe("");
-    skipped.skip();
-    expect(skippedWrites).toBe(0);
+    await skipped.skip();
+    expect(skippedWrites).toBe(1);
     expect(skipped.navigations).toContain("/pages/home/index");
     skipped.onUnload();
   });

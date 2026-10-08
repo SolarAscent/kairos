@@ -95,7 +95,8 @@ export const updateProfileRequestSchema = z.strictObject({
     .trim()
     .min(1)
     .max(32)
-    .regex(/^[^\u0000-\u001f\u007f]*$/),
+    .regex(/^[^\u0000-\u001f\u007f]*$/)
+    .nullable(),
   bio: z.string().trim().max(160),
   // Omitted retains the avatar; null removes it. Never accept client identity or remote URLs.
   avatar: avatarInputSchema.nullable().optional(),

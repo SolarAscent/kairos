@@ -1,11 +1,12 @@
 import "../../lib/zod-runtime";
+import { reaction } from "mobx-miniprogram";
 import { updateProfileRequestSchema, type AvatarInput, type UserProfile } from "@life/contracts";
 import { ClientError } from "../../lib/client";
 import { userMessage } from "../../lib/errors";
 import { DEFAULT_NICKNAME, readChosenAvatar } from "../../lib/profile";
 import type { AppServices } from "../../lib/session";
 
-const { client, profiles } = getApp<{ globalData: AppServices }>().globalData;
+const { client, profiles, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
 function createRuntime() {
   return {
     unloaded: false,
@@ -15,6 +16,7 @@ function createRuntime() {
     avatar: undefined as AvatarInput | null | undefined,
     original: null as UserProfile | null,
     pending: null as { signature: string; key: string } | null,
+    identityDispose: undefined as (() => void) | undefined,
   };
 }
 Page({
@@ -51,13 +53,33 @@ Page({
       this.runtime.redirected = true;
       this.runtime.avatar = undefined;
       this.runtime.original = this.runtime.pending = null;
-      this.updateData({ nickname: "", bio: "", avatarPath: "", loaded: false, userId: "" });
+      this.updateData({
+        nickname: "",
+        bio: "",
+        avatarPath: "",
+        loaded: false,
+        userId: "",
+        displayName: DEFAULT_NICKNAME,
+        identityLabel: "",
+        identityDetail: "",
+        createdDate: "",
+        error: "",
+        notice: "",
+        avatarError: "",
+        hasAvatar: false,
+        dirty: false,
+        wechatLinked: false,
+      });
       wx.reLaunch({ url: "/pages/home/index" });
     }
     return false;
   },
   onLoad() {
     this.runtime = createRuntime();
+    this.runtime.identityDispose = reaction(
+      () => sessionStore.userId,
+      () => this.current(),
+    );
     const info = wx.getWindowInfo();
     const menu = wx.getMenuButtonBoundingClientRect();
     this.updateData({
@@ -72,6 +94,7 @@ Page({
   },
   onUnload() {
     this.runtime.unloaded = true;
+    this.runtime.identityDispose?.();
     this.runtime.avatarGeneration++;
     this.runtime.avatar = undefined;
   },
@@ -169,12 +192,12 @@ Page({
     if (this.data.saving || this.data.avatarLoading || !this.data.loaded || !this.data.dirty)
       return;
     const parsed = updateProfileRequestSchema.safeParse({
-      nickname: this.data.nickname,
+      nickname: this.data.nickname.trim() || null,
       bio: this.data.bio,
       ...(this.runtime.avatar === undefined ? {} : { avatar: this.runtime.avatar }),
     });
     if (!parsed.success) {
-      this.updateData({ error: "请填写 1–32 个字符的昵称，个人简介最多 160 个字符。" });
+      this.updateData({ error: "昵称最多 32 个字符，个人简介最多 160 个字符。" });
       return;
     }
     this.updateData({ saving: true, error: "", notice: "" });

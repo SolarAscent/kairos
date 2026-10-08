@@ -3,6 +3,7 @@ import { reaction } from "mobx-miniprogram";
 import type { AppServices } from "../../lib/session";
 import { getUserSettings, patchUserSettings, type UserSettings } from "../../lib/settings";
 import { userMessage } from "../../lib/errors";
+import { userProfileSchema, updateProfileRequestSchema } from "@life/contracts";
 
 const { client, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
 type Settings = UserSettings;
@@ -42,6 +43,9 @@ function createRuntime() {
     loaded: false,
     loading: false,
     pendingWrite: null as { signature: string; key: string } | null,
+    pendingProfile: null as { signature: string; key: string } | null,
+    originalNickname: "",
+    bio: "",
   };
 }
 function createData() {
@@ -53,6 +57,7 @@ function createData() {
     bottomInset: 24,
     busy: false,
     error: "",
+    nickname: "",
     relaxation: initial.relaxation,
     defaultMinutes: initial.defaultMinutes,
     defaultBudget: initial.defaultBudget,
@@ -153,10 +158,17 @@ Page({
     const generation = ++state.generation;
     const owner = client.userId;
     state.loading = true;
+    this.updateData({ loading: true, error: "" });
     try {
-      const result = await getUserSettings(client);
+      const [result, profile] = await Promise.all([
+        getUserSettings(client),
+        client.request("/v1/users/me", userProfileSchema),
+      ]);
       if (!this.isCurrent(state, generation, owner)) return;
+      state.originalNickname = profile.nickname ?? "";
+      state.bio = profile.bio;
       this.updateData(fromSettings(result));
+      this.updateData({ nickname: state.originalNickname });
       state.loaded = true;
       this.updateData({ loaded: true, error: "" });
     } catch (error) {
@@ -185,45 +197,76 @@ Page({
     if (this.data.busy) return;
     this.updateData({ homeRegion: event.detail.value });
   },
+  editNickname(event: WechatMiniprogram.Input) {
+    if (this.data.busy) return;
+    this.updateData({ nickname: event.detail.value, error: "" });
+  },
   next() {
     if (this.data.busy || !this.runtime.loaded) return;
-    if (this.data.step < 2) this.updateData({ step: this.data.step + 1, error: "" });
+    if (this.data.step < 3) this.updateData({ step: this.data.step + 1, error: "" });
     else void this.finish();
   },
   previous() {
     if (this.data.busy) return;
     if (this.data.step > 0) this.updateData({ step: this.data.step - 1, error: "" });
   },
-  skip() {
-    if (this.data.busy) return;
-    wx.redirectTo({ url: "/pages/home/index" });
+  async skip() {
+    await this.persist(true);
   },
   async finish() {
+    await this.persist(false);
+  },
+  async persist(skip: boolean) {
     const state = this.runtime;
     const generation = state.generation;
     const owner = state.owner;
-    if (this.data.busy || !state.loaded) return;
-    const payload = {
-      recommendation: {
-        relaxation: this.data.relaxation,
-        defaultMinutes: this.data.defaultMinutes,
-        defaultBudget: this.data.defaultBudget,
-        goingOut: this.data.goingOut,
-        homeRegion: this.data.homeRegion.trim(),
-      },
-      privacy: { useLocation: this.data.useLocation },
-      onboardingCompleted: true,
-    };
+    if (this.data.busy || (!skip && !state.loaded) || !owner) return;
+    const nickname = this.data.nickname.trim();
+    const profileInput =
+      !skip && nickname && nickname !== state.originalNickname
+        ? updateProfileRequestSchema.safeParse({ nickname, bio: state.bio })
+        : null;
+    if (profileInput && !profileInput.success) {
+      this.updateData({ error: "昵称最多 32 个字符，请去掉换行或特殊控制字符。", step: 0 });
+      return;
+    }
+    const payload = skip
+      ? { onboardingCompleted: true }
+      : {
+          recommendation: {
+            relaxation: this.data.relaxation,
+            defaultMinutes: this.data.defaultMinutes,
+            defaultBudget: this.data.defaultBudget,
+            goingOut: this.data.goingOut,
+            homeRegion: this.data.homeRegion.trim(),
+          },
+          privacy: { useLocation: this.data.useLocation },
+          onboardingCompleted: true,
+        };
     const signature = JSON.stringify(payload);
     this.updateData({ busy: true, error: "" });
     try {
+      if (profileInput?.success) {
+        const profileSignature = JSON.stringify(profileInput.data);
+        if (state.pendingProfile?.signature !== profileSignature)
+          state.pendingProfile = { signature: profileSignature, key: await client.newKey() };
+        if (!this.isCurrent(state, generation, owner)) return;
+        await client.request("/v1/users/me/profile", userProfileSchema, {
+          method: "POST",
+          data: profileInput.data,
+          key: state.pendingProfile.key,
+        });
+        if (!this.isCurrent(state, generation, owner)) return;
+        state.originalNickname = nickname;
+        state.pendingProfile = null;
+      }
       if (!state.pendingWrite || state.pendingWrite.signature !== signature)
         state.pendingWrite = { signature, key: await client.newKey() };
       if (!this.isCurrent(state, generation, owner)) return;
       await patchUserSettings(client, payload, state.pendingWrite.key);
       if (!this.isCurrent(state, generation, owner)) return;
       state.pendingWrite = null;
-      wx.redirectTo({ url: "/pages/home/index" });
+      wx.reLaunch({ url: "/pages/home/index" });
     } catch (error) {
       if (this.isCurrent(state, generation, owner)) this.updateData({ error: userMessage(error) });
     } finally {

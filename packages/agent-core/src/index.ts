@@ -119,6 +119,9 @@ export function createModelGateway(env: NodeJS.ProcessEnv): ModelGateway {
       throw new Error("OPENAI_PROVIDER_CONFIGURATION_MISSING");
     return new OpenAIResponsesProvider(env.OPENAI_API_KEY, env.OPENAI_MODEL);
   }
-  if (env.MODEL_PROVIDER === "mock") return new MockModelProvider();
+  if (env.MODEL_PROVIDER === "mock") {
+    if (env.NODE_ENV === "production") throw new Error("MOCK_MODEL_FORBIDDEN_IN_PRODUCTION");
+    return new MockModelProvider();
+  }
   throw new Error("MODEL_PROVIDER_INVALID");
 }
