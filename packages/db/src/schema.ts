@@ -49,6 +49,7 @@ export const users = pgTable("users", {
   onboardingVersion: integer("onboarding_version"),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
+  lastActiveAt: ts("last_active_at").notNull().defaultNow(),
   deletedAt: ts("deleted_at"),
 });
 

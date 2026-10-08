@@ -168,7 +168,7 @@ describe("PostgreSQL + HTTP + Worker", () => {
   it("migrates twice and returns live readiness", async () => {
     expect(
       (await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows,
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect((await request("GET", "/health/ready")).statusCode).toBe(200);
   });
   it("serializes concurrent first login without duplicate accounts", async () => {

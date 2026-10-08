@@ -6,7 +6,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, lte } from "drizzle-orm";
 import { authSessions, users, type Database } from "@life/db";
 import { DATABASE } from "./tokens.js";
 import type { ApiRequest } from "./http.js";
@@ -111,5 +111,18 @@ export class AuthGuard implements CanActivate {
       )
       .limit(1);
     if (!session) throw new UnauthorizedException({ code: "SESSION_REVOKED" });
+    // Throttle writes while recording successful use for inactive-account retention.
+    const now = new Date();
+    await this.db
+      .update(users)
+      .set({ lastActiveAt: now })
+      .where(
+        and(
+          eq(users.id, user.id),
+          eq(users.status, "ACTIVE"),
+          isNull(users.deletedAt),
+          lte(users.lastActiveAt, new Date(now.getTime() - 60000)),
+        ),
+      );
   }
 }
