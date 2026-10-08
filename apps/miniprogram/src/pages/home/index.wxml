@@ -10,6 +10,11 @@
       <button wx:if="{{userId}}" class="icon-button" bindtap="openSearch" aria-label="搜索生活记录">
         ⌕
       </button>
+      <button wx:if="{{userId}}" class="profile-entry" bindtap="openProfile" disabled="{{busy}}" aria-label="打开个人资料">
+        <text class="profile-entry-label">{{nickname || '我的'}}</text>
+        <image wx:if="{{avatarPath}}" class="profile-entry-avatar" src="{{avatarPath}}" mode="aspectFill" />
+        <view wx:else class="profile-entry-default">K</view>
+      </button>
       <button class="settings-button" bindtap="openSettings" aria-label="打开设置">设置</button>
     </view>
   </view>

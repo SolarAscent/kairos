@@ -43,6 +43,11 @@ export const outboxStatusEnum = pgEnum("outbox_status", [
 
 export const users = pgTable("users", {
   id: id(),
+  nickname: varchar("nickname", { length: 32 }),
+  bio: varchar("bio", { length: 160 }).notNull().default(""),
+  avatarVersion: uuid("avatar_version"),
+  avatarMimeType: varchar("avatar_mime_type", { length: 32 }),
+  avatarBase64: text("avatar_base64"),
   status: userStatusEnum("status").notNull().default("ACTIVE"),
   locale: varchar("locale", { length: 24 }).notNull().default("zh-CN"),
   timezone: varchar("timezone", { length: 64 }).notNull().default("Asia/Shanghai"),

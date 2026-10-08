@@ -41,6 +41,38 @@
   font-size: 52rpx;
   padding: 0 10rpx;
 }
+.profile-entry {
+  width: auto !important;
+  max-width: 250rpx;
+  min-height: 88rpx;
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin: 0 !important;
+  padding: 0 8rpx;
+  color: #9c4a1a;
+}
+.profile-entry-label {
+  max-width: 150rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 28rpx;
+}
+.profile-entry-avatar,
+.profile-entry-default {
+  flex-shrink: 0;
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 50%;
+}
+.profile-entry-default {
+  background: #f2e8d7;
+  color: #9c4a1a;
+  text-align: center;
+  line-height: 56rpx;
+  font-size: 30rpx;
+}
 .content {
   flex: 1;
   height: 0;

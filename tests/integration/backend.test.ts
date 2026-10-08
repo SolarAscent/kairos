@@ -166,9 +166,11 @@ describe("PostgreSQL + HTTP + Worker", () => {
     ).not.toBeNull();
   });
   it("migrates twice and returns live readiness", async () => {
-    expect(
-      (await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows,
-    ).toHaveLength(2);
+    expect((await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows).toEqual([
+      { name: "0001_initial.sql" },
+      { name: "0002_capture_pipeline.sql" },
+      { name: "0003_user_profile.sql" },
+    ]);
     expect((await request("GET", "/health/ready")).statusCode).toBe(200);
   });
   it("serializes concurrent first login without duplicate accounts", async () => {

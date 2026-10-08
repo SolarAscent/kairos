@@ -4,7 +4,8 @@
     "pages/life-list/index",
     "pages/life-detail/index",
     "pages/settings/index",
-    "pages/onboarding/index"
+    "pages/onboarding/index",
+    "pages/profile/index"
   ],
   "permission": {
     "scope.userLocation": {
