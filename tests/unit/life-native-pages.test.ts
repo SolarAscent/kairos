@@ -39,14 +39,14 @@ function mount(
   const navigations: string[] = [];
   const removedFiles: string[] = [];
   const writtenFiles: { path: string; text: string }[] = [];
-  const sessionKey = "kairos:develop:touristappid:http://127.0.0.1:3000";
-  storage.set(sessionKey, {
+  let sessionKey: string | null = null;
+  const initialSession = {
     userId,
     accessToken: "test-access",
     refreshToken: "test-refresh-" + "x".repeat(40),
     expiresIn: 1200,
     expiresAt: Date.now() + 1200000,
-  });
+  };
   const fileSystem = {
     writeFile(options: any) {
       writtenFiles.push({ path: options.filePath, text: options.data });
@@ -80,7 +80,18 @@ function mount(
       },
       wx: {
         env: { USER_DATA_PATH: "/user-data" },
-        getStorageSync: (key: string) => storage.get(key),
+        getStorageSync: (key: string) => {
+          // Seed the compiled client's actual session namespace exactly once.
+          // Local staging builds must exercise the same authenticated flows as CI.
+          if (
+            sessionKey === null &&
+            /^kairos:(develop|staging|production):[^:]+:https?:\/\//.test(key)
+          ) {
+            sessionKey = key;
+            storage.set(key, initialSession);
+          }
+          return storage.get(key);
+        },
         setStorageSync: (key: string, value: unknown) => storage.set(key, value),
         removeStorageSync: (key: string) => storage.delete(key),
         getAppBaseInfo: () => ({ SDKVersion: "3.7.1" }),
