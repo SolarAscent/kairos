@@ -19,10 +19,11 @@
 .section-title { margin-bottom: 14rpx; font-size: 29rpx; color: #513b2d; }
 .budget-options { display: flex; gap: 10rpx; }
 .budget { flex: 1; min-height: 76rpx; padding: 8rpx; border: 2rpx solid #e5d6c4; border-radius: 16rpx; font-size: 28rpx; color: #654d3e; }
+.budget, .back, .next { display: flex; align-items: center; justify-content: center; line-height: 1.4; }
 .budget.selected { border-color: #a95f3f; background: #f6e5d5; color: #713e2b; }
 .error { display: block; margin-top: 22rpx; font-size: 28rpx; line-height: 1.45; color: #a13e35; }
 .retry { min-height: 76rpx; margin-top: 14rpx; color: #8e4e35; font-size: 29rpx; }
 .actions { display: flex; gap: 14rpx; margin-top: 38rpx; }
-.back, .next { min-height: 96rpx; border-radius: 20rpx; font-size: 31rpx; }
+.back, .next { min-height: 96rpx; padding: 20rpx 24rpx; border-radius: 20rpx; font-size: 31rpx; }
 .back { width: 34%; border: 2rpx solid #d9c8b6; color: #684e3c; }
 .next { flex: 1; background: #8e4e35; color: #fff9f0; font-weight: 600; }
