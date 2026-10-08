@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createContext, runInContext } from "node:vm";
+import { createContext } from "node:vm";
+import { createNativeModuleLoader } from "../helpers/native-module-loader";
 import { describe, expect, it } from "vitest";
 
 const owner = randomUUID();
@@ -85,11 +85,9 @@ function mount(send: (request: any) => void) {
     },
     { codeGeneration: { strings: false, wasm: false } },
   );
-  for (const path of [
-    "apps/miniprogram/dist/app.js",
-    "apps/miniprogram/dist/pages/life-list/index.js",
-  ])
-    runInContext("(function(){" + readFileSync(path, "utf8") + "\n})();", context);
+  const native = createNativeModuleLoader(context);
+  native.runEntry("app.js");
+  native.runEntry("pages/life-list/index.js");
   const page = {
     ...definition,
     data: JSON.parse(JSON.stringify(definition.data)),

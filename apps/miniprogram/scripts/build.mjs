@@ -1,4 +1,4 @@
-import { readFile, readdir, mkdir, writeFile, copyFile, rm, mkdtemp } from "node:fs/promises";
+import { readFile, readdir, mkdir, writeFile, copyFile, rm, mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolve, relative, dirname } from "node:path";
@@ -38,10 +38,7 @@ try {
   }
   await assets(src);
   const app = JSON.parse(await readFile(resolve(src, "app.json"), "utf8"));
-  await build({
-    entryPoints: [resolve(src, "app.ts"), ...app.pages.map((page) => resolve(src, page + ".ts"))],
-    outbase: src,
-    outdir: out,
+  const common = {
     bundle: true,
     platform: "browser",
     format: "cjs",
@@ -52,7 +49,46 @@ try {
       "process.env.NODE_ENV": '"production"',
     },
     sourcemap: false,
-  });
+  };
+  // WeChat loads CommonJS modules; esbuild's automatic splitting requires ESM.
+  // Publish shared dependencies once instead of copying them into every page.
+  const shared = new Map([
+    ["zod", "shared/zod.js"],
+    ["@life/contracts", "shared/contracts.js"],
+    ["mobx-miniprogram", "shared/mobx.js"],
+  ]);
+  function sharedImports(outfile, included) {
+    return {
+      name: "wechat-shared-dependencies",
+      setup(builder) {
+        builder.onResolve({ filter: /^(zod|@life\/contracts|mobx-miniprogram)$/ }, (args) => {
+          if (args.path === included) return;
+          const target = shared.get(args.path);
+          let path = relative(dirname(outfile), resolve(out, target)).replaceAll("\\", "/");
+          if (!path.startsWith(".")) path = "./" + path;
+          return { path, external: true };
+        });
+      },
+    };
+  }
+  for (const [dependency, path] of shared) {
+    const outfile = resolve(out, path);
+    await build({
+      ...common,
+      stdin: { contents: `export * from ${JSON.stringify(dependency)};`, resolveDir: root },
+      outfile,
+      plugins: [sharedImports(outfile, dependency)],
+    });
+  }
+  for (const page of ["app", ...app.pages]) {
+    const outfile = resolve(out, page + ".js");
+    await build({
+      ...common,
+      entryPoints: [resolve(src, page + ".ts")],
+      outfile,
+      plugins: [sharedImports(outfile)],
+    });
+  }
   await writeFile(
     resolve(out, "project.config.json"),
     JSON.stringify(
@@ -69,6 +105,18 @@ try {
       2,
     ) + "\n",
   );
+  let packageBytes = 0;
+  async function measure(dir) {
+    for (const item of await readdir(dir, { withFileTypes: true })) {
+      const path = resolve(dir, item.name);
+      if (item.isDirectory()) await measure(path);
+      else packageBytes += (await stat(path)).size;
+    }
+  }
+  await measure(out);
+  if (packageBytes > 2 * 1024 * 1024)
+    throw new Error(`MINIPROGRAM_MAIN_PACKAGE_TOO_LARGE: ${packageBytes} bytes exceeds 2 MiB`);
+  console.log(`Mini Program main package: ${Math.ceil(packageBytes / 1024)} KiB / 2048 KiB`);
   const generated = new Set();
   async function publish(dir) {
     for (const item of await readdir(dir, { withFileTypes: true })) {

@@ -1,0 +1,28 @@
+.screen { position: fixed; inset: 0; display: flex; flex-direction: column; background: #f5efe6; color: #392c25; }
+.topbar { height: 88rpx; display: flex; align-items: center; justify-content: space-between; padding: 0 36rpx; flex-shrink: 0; }
+.step-label { font-size: 29rpx; color: #886c58; }
+.skip { min-height: 64rpx; padding: 0 18rpx; color: #725a49; font-size: 29rpx; }
+.content { flex: 1; min-height: 0; }
+.page-body { padding: 44rpx 36rpx 48rpx; }
+.intro { padding: 10rpx 4rpx 36rpx; }
+.headline { font-size: 44rpx; line-height: 1.3; font-weight: 650; color: #583a2b; }
+.copy { margin-top: 16rpx; font-size: 29rpx; line-height: 1.55; color: #765e4e; }
+.choice-list { display: flex; flex-direction: column; gap: 16rpx; }
+.choice { min-height: 104rpx; padding: 20rpx 24rpx; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left; border: 2rpx solid #e5d6c4; border-radius: 22rpx; background: #fffaf3; color: #604939; font-size: 30rpx; line-height: 1.4; }
+.choice.selected { border-color: #a95f3f; background: #f6e5d5; color: #713e2b; }
+.choice-title { font-size: 30rpx; }
+.choice-note { margin-top: 10rpx; font-size: 28rpx; line-height: 1.4; color: #806d5f; }
+.region-entry { padding: 22rpx; border: 1rpx solid #eadbc9; border-radius: 20rpx; background: #fffaf3; }
+.region-label { margin-bottom: 12rpx; font-size: 29rpx; color: #513b2d; }
+.region-input { min-height: 76rpx; font-size: 29rpx; color: #49372c; }
+.budget-group { margin-top: 20rpx; padding: 20rpx; border-radius: 20rpx; background: #fffaf3; border: 1rpx solid #eadbc9; }
+.section-title { margin-bottom: 14rpx; font-size: 29rpx; color: #513b2d; }
+.budget-options { display: flex; gap: 10rpx; }
+.budget { flex: 1; min-height: 76rpx; padding: 8rpx; border: 2rpx solid #e5d6c4; border-radius: 16rpx; font-size: 28rpx; color: #654d3e; }
+.budget.selected { border-color: #a95f3f; background: #f6e5d5; color: #713e2b; }
+.error { display: block; margin-top: 22rpx; font-size: 28rpx; line-height: 1.45; color: #a13e35; }
+.retry { min-height: 76rpx; margin-top: 14rpx; color: #8e4e35; font-size: 29rpx; }
+.actions { display: flex; gap: 14rpx; margin-top: 38rpx; }
+.back, .next { min-height: 96rpx; border-radius: 20rpx; font-size: 31rpx; }
+.back { width: 34%; border: 2rpx solid #d9c8b6; color: #684e3c; }
+.next { flex: 1; background: #8e4e35; color: #fff9f0; font-weight: 600; }

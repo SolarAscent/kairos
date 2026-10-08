@@ -28,6 +28,7 @@ import {
   lifeDeckRequestSchema,
   lifeDeckResponseSchema,
   lifeStacksResponseSchema,
+  lifeDetailResponseSchema,
 } from "@life/contracts";
 import { ApiContract } from "../common/api-contract.js";
 import { ApiRequest, CurrentUser, parseBody, success } from "../common/http.js";
@@ -143,7 +144,20 @@ export class LifeController {
       await this.life.rebuildFacts(user.id, parseBody(uuidSchema, idInput), key, request.traceId),
     );
   }
+  @Post(":id/update")
+  @HttpCode(200)
+  @ApiContract(lifeUpdatedSchema, patchLifeObjectRequestSchema, 200, true)
+  async update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") idInput: string,
+    @Headers("x-idempotency-key") key: string | undefined,
+    @Body() body: unknown,
+    @Req() request: ApiRequest,
+  ) {
+    return this.patch(user, idInput, key, body, request);
+  }
   @Get(":id")
+  @ApiContract(lifeDetailResponseSchema)
   async get(
     @CurrentUser() user: AuthenticatedUser,
     @Param("id") idInput: string,

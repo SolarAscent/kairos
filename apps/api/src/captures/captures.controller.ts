@@ -8,6 +8,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -15,6 +16,9 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import {
   captureAcceptedSchema,
   captureResponseSchema,
+  captureImageResponseSchema,
+  capturePageRequestSchema,
+  capturePageResponseSchema,
   createCaptureRequestSchema,
   uuidSchema,
 } from "@life/contracts";
@@ -48,6 +52,18 @@ export class CapturesController {
     return success(request, await this.captures.list(user.id));
   }
 
+  @Get("page")
+  @ApiContract(capturePageResponseSchema)
+  @ApiOperation({ summary: "按固定创建时间截止分页查看全部原始记录" })
+  async page(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: unknown,
+    @Req() request: ApiRequest,
+  ) {
+    const input = parseBody(capturePageRequestSchema, query);
+    return success(request, await this.captures.page(user.id, input.cursor));
+  }
+
   @Get(":id")
   @ApiContract(captureResponseSchema)
   async get(
@@ -56,5 +72,14 @@ export class CapturesController {
     @Req() request: ApiRequest,
   ) {
     return success(request, await this.captures.get(user.id, parseBody(uuidSchema, idInput)));
+  }
+  @Get(":id/image")
+  @ApiContract(captureImageResponseSchema)
+  async image(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id") idInput: string,
+    @Req() request: ApiRequest,
+  ) {
+    return success(request, await this.captures.image(user.id, parseBody(uuidSchema, idInput)));
   }
 }
