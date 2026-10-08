@@ -1,152 +1,745 @@
-<view class="screen" style="padding-top: {{topInset}}px;">
+<view
+  class="screen journal-page {{reduceMotion ? 'reduce-motion' : ''}}"
+  style="padding-top: {{topInset}}px;"
+>
+  <view class="home-header">
+    <text class="header-title"
+      >{{!userId || tab === 'now' ? '此刻' : tab === 'journal' ? '记录' : '生活'}}</text
+    >
+    <view class="header-actions">
+      <button wx:if="{{userId}}" class="icon-button" bindtap="openSearch" aria-label="搜索生活记录">
+        ⌕
+      </button>
+      <button wx:if="{{userId}}" class="profile-entry" bindtap="openProfile" disabled="{{busy}}" aria-label="打开个人资料">
+        <text class="profile-entry-label">{{nickname || '我的'}}</text>
+        <image wx:if="{{avatarPath}}" class="profile-entry-avatar" src="{{avatarPath}}" mode="aspectFill" />
+        <view wx:else class="profile-entry-default">K</view>
+      </button>
+      <button class="settings-button" bindtap="openSettings" aria-label="打开设置">设置</button>
+    </view>
+  </view>
   <scroll-view class="content" scroll-y="{{!stackDragging}}" type="list">
     <view class="page-body">
-      <view wx:if="{{userId}}" class="home-header"><text class="home-wordmark">KAIROS</text><button class="profile-entry" bindtap="openProfile" disabled="{{busy}}" aria-label="打开个人资料"><text class="profile-entry-label">{{nickname || '我的'}}</text><image wx:if="{{avatarPath}}" class="profile-entry-avatar" src="{{avatarPath}}" mode="aspectFill" /><view wx:else class="profile-entry-default">K</view></button></view>
       <view wx:if="{{!userId}}" class="welcome">
-        <text class="eyebrow">留一点时间，给自己</text>
-        <text class="headline">想做的事，
-从此刻开始。</text>
-        <text class="copy">留下一句话，让那些一直记着的念头，慢慢走进生活。</text>
-        <button class="primary login" bindtap="signIn" loading="{{busy}}" disabled="{{busy}}">{{loginLabel}}</button>
-        <text class="footnote">登录后，你留下的内容会保存到自己的账户。</text>
+        <view class="paper-illustration" aria-hidden="true"
+          ><view class="illustration-tape"></view><view class="drawn-sun"></view
+          ><view class="drawn-lines"><view></view><view></view><view></view></view
+        ></view>
+        <text class="headline">想做的事， 从此刻开始。</text>
+        <text class="copy">留下一句话、一张图片，或一段声音。让一直记着的念头，慢慢走进生活。</text>
+        <button class="primary" bindtap="signIn" loading="{{busy}}" disabled="{{busy}}">
+          {{loginLabel}}
+        </button>
       </view>
       <block wx:elif="{{tab === 'now'}}">
+        <view class="moment-heading"
+          ><text>{{recommendation ? '给现在的一个小提议' : '给生活留一点空白'}}</text
+          ><button
+            wx:if="{{!(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}"
+            class="text-button"
+            bindtap="openConditions"
+            disabled="{{busy}}"
+          >
+            调整条件
+          </button></view
+        >
+        <view
+          wx:if="{{recommendationImage}}"
+          class="recommendation-polaroid"
+          bindtap="viewRecommendation"
+          aria-role="button"
+          aria-label="查看这条记录的原始图片"
+          ><view class="paper-tape" aria-hidden="true"></view
+          ><image
+            src="{{recommendationImage}}"
+            mode="aspectFill"
+            class="recommendation-photo"
+          /><text class="photo-caption">你留下的原始图片</text></view
+        >
         <view wx:if="{{recommendation}}" class="action-card">
-          <text class="eyebrow">此刻，可以</text>
-          <text class="headline">{{recommendation.headline}}</text>
-          <text class="copy">{{recommendation.body}}</text>
-          <text wx:if="{{recommendation.plan}}" class="plan-label">{{recommendation.plan.label}}</text>
-          <view wx:if="{{recommendation.plan}}" class="plan-steps"><text wx:for="{{recommendation.plan.steps}}" wx:key="*this">{{item}}</text></view>
+          <view class="paper-tape" aria-hidden="true"></view>
+          <view class="suggestion-label"
+            ><text
+              >{{recommendation.progress && recommendation.progress.state === 'ACTIVE' ? '正在行动'
+              : '此刻，可以'}}</text
+            ><text class="suggestion-mark" aria-hidden="true">✦</text></view
+          >
+          <view
+            class="recommendation-copy"
+            bindtap="viewRecommendation"
+            aria-role="button"
+            aria-label="查看这条记录的完整内容"
+          >
+            <text class="headline">{{recommendation.headline}}</text>
+            <text class="copy">{{recommendation.body}}</text>
+          </view>
+          <view wx:if="{{recommendation.plan}}" class="plan-note"
+            ><text class="plan-label">{{recommendation.plan.label}}</text
+            ><view class="plan-steps"
+              ><text wx:for="{{recommendation.plan.steps}}" wx:key="*this"
+                >{{index + 1}}. {{item}}</text
+              ></view
+            ></view
+          >
           <view class="reason"><text>{{recommendation.reasonText}}</text></view>
-          <view wx:if="{{routeView}}" class="route-preview">
-            <text class="route-destination">{{routeView.destinationLabel}}</text>
-            <text wx:if="{{routeView.destinationAddress}}" class="location-choice-address">{{routeView.destinationAddress}}</text>
-            <text wx:if="{{routeView.destinationSourceText}}" class="route-privacy">{{routeView.destinationSourceText}}</text>
-            <map id="recommendation-route" class="route-map" latitude="{{routeView.latitude}}" longitude="{{routeView.longitude}}" markers="{{routeView.markers}}" polyline="{{routeView.polyline || []}}" include-points="{{routeView.points}}" show-location="{{false}}" enable-scroll="{{false}}" enable-zoom="{{false}}" bindtap="openRouteDestination" bindmarkertap="openRouteDestination" aria-label="上次查询的位置、去程路线与所选目的地" />
-            <text class="route-duration">{{routeView.durationText}}</text>
-            <text wx:if="{{routeView.selectionText}}" class="route-status">{{routeView.selectionText}}</text>
-            <text class="route-privacy">{{routeView.checkedAtText}} · 可更新路线</text>
-            <text class="route-blocker">{{departureReason}}</text>
-            <button class="text-button route-open" bindtap="openRouteDestination">在微信地图中查看目的地 ›</button>
-            <text class="route-privacy">路线仅保留在本次小程序会话中；退出登录后清除</text>
-          </view>
-          <view wx:if="{{(canVerifyRoute || routeView || recommendation.executionType === 'NAVIGATE') && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="destination-picker">
-            <button class="secondary" bindtap="chooseDestination" loading="{{mapPickerBusy}}" disabled="{{busy}}">{{mapDestination && routeNeedsEntrance ? '选择目的地出入口' : (routeView || mapDestination ? '更换地点或选择出入口' : '在微信地图中搜索地点')}}</button>
-            <text wx:if="{{mapDestination && routeNeedsEntrance}}" class="route-privacy">校区、园区等大地点，可搜索具体校门或出入口；返回后再确认完整地址。</text>
-            <text wx:else class="route-privacy">使用微信地图搜索与选择你想去的位置</text>
-          </view>
-          <view wx:if="{{mapSelection}}" class="location-choices">
-            <text class="location-choice-heading">确认你在微信地图选择的位置</text>
-            <text class="location-choice-title">{{mapSelection.name}}</text>
-            <text class="location-choice-address">{{mapSelection.address}}</text>
-            <text class="route-privacy">请核对具体校区和完整地址；确认后将用这个位置安排路线。</text>
-            <button class="primary" bindtap="confirmMapSelection" disabled="{{busy}}" loading="{{mapPickerBusy}}">使用这个位置</button>
-            <button class="text-button" bindtap="cancelMapSelection" disabled="{{busy}}">取消，保留原建议</button>
-          </view>
-          <view wx:if="{{mapDestination && !mapSelection}}" class="selected-destination">
-            <text class="route-privacy">{{mapDestination.source === 'USER_SELECTED_MAP' ? '你在微信地图选择的位置' : '你选择的地图地点'}}</text>
-            <text class="location-choice-title">{{mapDestination.name}}</text>
-            <text class="location-choice-address">{{mapDestination.address}}</text>
-          </view>
-          <view wx:if="{{canVerifyRoute && hasConfirmedDestination && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}" class="route-check">
-            <button class="secondary" bindtap="verifyCurrentRoute" loading="{{routeLocationBusy}}" disabled="{{busy}}">{{routeLocationBusy ? '正在查询路线…' : (routeView ? '更新路线' : '用当前位置核对路程')}}</button>
-            <text wx:if="{{routeStatus}}" class="route-status">{{routeStatus}}</text>
-            <text class="route-privacy">位置仅用于本次建议与腾讯地图路线查询</text>
-          </view>
-          <text wx:if="{{departureReason && !routeView}}" class="route-blocker">{{departureReason}}</text>
+          <button
+            wx:if="{{canVerifyRoute || routeView || recommendation.executionType === 'NAVIGATE' || mapDestination}}"
+            class="route-entry"
+            bindtap="openRouteSheet"
+          >
+            <view
+              ><text class="route-entry-title"
+                >{{routeView ? routeView.destinationLabel : mapDestination ? mapDestination.name :
+                '核对地点与路线'}}</text
+              ><text class="route-entry-detail"
+                >{{routeView ? routeView.durationText : '选好目的地后，用当前位置核对路程'}}</text
+              ></view
+            ><text class="arrow">→</text>
+          </button>
+          <text wx:if="{{departureReason && !routeView}}" class="route-blocker"
+            >{{departureReason}}</text
+          >
           <view class="action-row">
-            <button wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}" class="primary" data-type="COMPLETE" bindtap="feedback" disabled="{{busy}}">完成这一步</button>
-            <button wx:else class="primary" data-type="ACCEPT" bindtap="feedback" disabled="{{busy}}" loading="{{busy}}">就做这个</button>
-            <button wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}" class="secondary" data-type="REJECT" bindtap="feedback" disabled="{{busy}}">结束这次安排</button>
-            <button wx:else class="secondary" data-type="SKIP" bindtap="feedback" disabled="{{busy}}">换一个</button>
+            <button
+              wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}"
+              class="secondary"
+              data-type="REJECT"
+              bindtap="feedback"
+              disabled="{{busy}}"
+            >
+              结束安排
+            </button>
+            <button
+              wx:else
+              class="secondary"
+              data-type="SKIP"
+              bindtap="feedback"
+              disabled="{{busy}}"
+            >
+              换一个
+            </button>
+            <button
+              wx:if="{{recommendation.progress && recommendation.progress.state === 'ACTIVE'}}"
+              class="primary"
+              data-type="COMPLETE"
+              bindtap="feedback"
+              disabled="{{busy}}"
+            >
+              完成这一步
+            </button>
+            <button
+              wx:else
+              class="primary"
+              data-type="ACCEPT"
+              bindtap="feedback"
+              disabled="{{busy}}"
+              loading="{{busy}}"
+            >
+              就做这个 →
+            </button>
           </view>
-          <button class="delete-wish" bindtap="deleteWish" disabled="{{busy}}">删除该心愿</button>
-          <text wx:if="{{notice && !sheet}}" class="notice">{{notice}}</text>
-          <text wx:if="{{error && !sheet}}" class="error">{{error}}</text>
+          <button class="delete-wish" bindtap="deleteWish" disabled="{{busy}}">删除这条记录</button>
         </view>
-        <view wx:elif="{{question}}" class="adaptive-question">
-          <text class="eyebrow">想了解一点现在的你</text>
+        <view wx:elif="{{question}}" class="adaptive-question paper-card">
+          <view class="paper-tape" aria-hidden="true"></view>
+          <text class="question-label">想了解一点现在的你</text>
           <text class="headline question-title">{{question.text}}</text>
-          <view class="question-options"><button wx:for="{{question.options}}" wx:key="id" class="choice-card" hover-class="touch-pressed" data-option="{{item.id}}" bindtap="answerQuestion" disabled="{{busy}}">{{item.label}}</button></view>
+          <view class="question-options"
+            ><button
+              wx:for="{{question.options}}"
+              wx:key="id"
+              class="choice-card"
+              hover-class="touch-pressed"
+              data-option="{{item.id}}"
+              bindtap="answerQuestion"
+              disabled="{{busy}}"
+            >
+              {{item.label}}<text class="arrow">→</text>
+            </button></view
+          >
         </view>
         <view wx:else class="quiet">
-          <text class="headline">{{decided ? '现在，也可以\n不急着决定。' : '有一点空闲，\n想怎么度过？'}}</text>
-          <text class="copy">{{decided ? (quietReason || '暂时没有合适的建议。再留下一个想做的念头，也可以。') : '从你留下的念头里，找一件适合现在的小事。'}}</text>
-          <button class="primary" bindtap="decide" loading="{{busy}}" disabled="{{busy}}">{{decided ? '再看看' : '给我一个建议'}}</button>
+          <view class="quiet-polaroid" aria-hidden="true">
+            <view class="paper-tape"></view>
+            <image src="/assets/quiet-artwork.png" mode="aspectFill" class="quiet-photo" />
+            <text class="quiet-caption">给生活留一点空白</text>
+          </view>
+          <text class="headline"
+            >{{decided ? '现在，也可以\n不急着决定。' : '有一点空闲，\n想怎么度过？'}}</text
+          >
+          <text class="copy"
+            >{{decided ? (quietReason || '暂时没有合适的建议。再留下一个想做的念头，也可以。') :
+            '从你留下的念头里，找一件适合现在的小事。'}}</text
+          >
+          <button class="primary" bindtap="decide" loading="{{busy}}" disabled="{{busy}}">
+            {{decided ? '再看看' : '给我一个建议'}}
+          </button>
+          <button class="text-button quiet-record" bindtap="openCapture" disabled="{{busy}}">
+            ＋ 留下一个念头
+          </button>
         </view>
-        <view wx:if="{{cards.length}}" class="recent-cards">
-          <text class="recent-label">留下的念头</text>
-          <block wx:for="{{cards}}" wx:key="id"><view wx:if="{{index < 3}}" class="collected-card {{item.phase === 'SENDING' || item.phase === 'TRANSCRIBING' ? 'collecting' : ''}}">
-            <image wx:if="{{item.imagePath}}" src="{{item.imagePath}}" mode="aspectFill" class="card-image" />
-            <text class="collected-title">{{item.title}}</text><text class="collected-summary">{{item.summary}}</text><text class="status">{{item.statusLabel}}</text>
-            <view wx:if="{{item.phase === 'FAILED_LOCAL'}}" class="retry-row"><button class="text-button" bindtap="retryCapture">重新收好</button><button class="text-button" bindtap="editFailedCapture">看看原文</button></view>
-          </view></block>
-        </view>
+        <button class="text-button nearby-shortcut" bindtap="openNearby">
+          查看附近已记录地点 →
+        </button>
+        <view wx:if="{{cards.length}}" class="recent-cards"
+          ><view class="section-head"
+            ><text class="section-title small">最近留下</text
+            ><button class="text-button" data-tab="journal" bindtap="switchTab">
+              查看记录 →
+            </button></view
+          ><block wx:for="{{cards}}" wx:key="id"
+            ><view
+              wx:if="{{index < 2}}"
+              class="collected-card"
+              data-id="{{item.id}}"
+              bindtap="viewCapture"
+              ><image
+                wx:if="{{item.imagePath}}"
+                src="{{item.imagePath}}"
+                mode="aspectFill"
+                class="card-image"
+              /><text class="collected-title">{{item.title}}</text
+              ><text class="collected-summary">{{item.summary}}</text
+              ><view class="capture-meta"
+                ><text class="status">{{item.statusLabel}}</text
+                ><text wx:if="{{item.savedDate}}" class="saved-date">{{item.savedDate}}</text></view
+              ><view wx:if="{{item.phase === 'FAILED_LOCAL'}}" class="retry-row"
+                ><button class="text-button" catchtap="retryCapture">重新收好</button
+                ><button class="text-button" catchtap="editFailedCapture">看看原文</button></view
+              ></view
+            ></block
+          ></view
+        >
+      </block>
+      <block wx:elif="{{tab === 'journal'}}">
+        <view class="journal-intro"
+          ><text class="headline">留住一闪而过的念头</text
+          ><text class="copy">写一句、说一段，或留下一张图片。</text
+          ><button
+            class="primary"
+            bindtap="openCapture"
+            bindlongpress="chooseVoice"
+            disabled="{{busy}}"
+          >
+            ＋ 记录此刻
+          </button></view
+        >
+        <view class="section-head"
+          ><text class="section-title small">你的记录</text
+          ><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">
+            更新
+          </button></view
+        >
+        <view wx:if="{{!cards.length}}" class="empty paper-card"
+          ><text>还没有留下记录。</text
+          ><text class="copy">那些想去的地方、想做的事，都可以先收在这里。</text></view
+        >
+        <view
+          wx:for="{{cards}}"
+          wx:key="id"
+          class="collected-card journal-card {{item.phase === 'SENDING' || item.phase === 'TRANSCRIBING' ? 'collecting' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="viewCapture"
+          ><view wx:if="{{item.imagePath}}" class="polaroid-image"
+            ><image src="{{item.imagePath}}" mode="aspectFill" class="card-image" /></view
+          ><text class="collected-title">{{item.title}}</text
+          ><text class="collected-summary">{{item.summary}}</text
+          ><view class="capture-meta"
+            ><text class="status">{{item.statusLabel}}</text
+            ><text wx:if="{{item.savedDate}}" class="saved-date">{{item.savedDate}}</text></view
+          ><view wx:if="{{item.phase === 'FAILED_LOCAL'}}" class="retry-row"
+            ><button class="text-button" catchtap="retryCapture">重新收好</button
+            ><button class="text-button" catchtap="editFailedCapture">看看原文</button></view
+          ></view
+        >
+        <text wx:if="{{capturesMoreError}}" class="error">{{capturesMoreError}}</text>
+        <button wx:if="{{capturesHasMore}}" class="secondary" bindtap="loadMoreCaptures" disabled="{{capturesLoading || busy}}">{{capturesLoading ? '正在加载…' : capturesMoreError ? '重试加载记录' : '继续查看'}}</button>
       </block>
       <block wx:else>
-        <view class="section-head"><text class="section-title">生活里留下的</text><button hover-class="refresh-pressed" class="refresh-icon" bindtap="manualRefresh" disabled="{{busy}}" aria-label="更新生活内容">↻</button></view>
-        <view wx:if="{{lifeStacksLoaded && !lifeStacks.length}}" class="empty"><text>还没有整理好的内容。
-点下方的 ＋，留下第一个念头。</text></view>
-        <text wx:if="{{lifeStacksLoading}}" class="deck-status">正在翻开生活里留下的…</text>
-        <view wx:for="{{lifeStacks}}" wx:for-item="group" wx:key="kind" class="life-stack">
-          <view class="deck-heading"><text class="deck-kind">{{group.title}}</text><button class="deck-link" data-kind="{{group.kind}}" bindtap="openCategory">这一组 ›</button></view>
-          <view class="deck-stage">
-            <view wx:if="{{group.items.length > 2}}" class="deck-layer deck-layer-back"></view><view wx:if="{{group.items.length > 1}}" class="deck-layer deck-layer-middle"></view>
-            <swiper class="deck-swiper" vertical duration="260" current="{{group.current}}" data-kind="{{group.kind}}" bindchange="stackChanged" bindtouchstart="stackTouchStart" bindtouchend="stackTouchEnd" bindtouchcancel="stackTouchEnd" catchtouchmove="noop">
-              <swiper-item wx:for="{{group.items}}" wx:key="id">
-                <view class="deck-card">
-                  <view class="deck-copy" data-id="{{item.id}}" bindtap="viewLifeItem"><text wx:if="{{item.myRating === 'LIKE'}}" class="deck-preference">你点过喜欢</text><text class="deck-title" max-lines="3" overflow="ellipsis">{{item.title}}</text><text wx:if="{{item.summary}}" class="deck-summary" max-lines="3" overflow="ellipsis">{{item.summary}}</text></view>
-                  <text class="deck-meta" max-lines="1" overflow="ellipsis">{{item.locationLabel || ('留下于 ' + item.savedDate)}}</text>
-                  <view class="deck-ratings"><button class="rating-button {{item.myRating === 'LIKE' ? 'rated-like' : ''}}" data-id="{{item.id}}" data-rating="LIKE" bindtap="rateLifeItem" disabled="{{ratingBusy.length > 0}}" aria-label="{{item.myRating === 'LIKE' ? '撤回喜欢' : '喜欢'}}">👍 喜欢</button><button class="rating-button {{item.myRating === 'DISLIKE' ? 'rated-dislike' : ''}}" data-id="{{item.id}}" data-rating="DISLIKE" bindtap="rateLifeItem" disabled="{{ratingBusy.length > 0}}" aria-label="{{item.myRating === 'DISLIKE' ? '撤回不喜欢' : '不喜欢'}}">👎 不喜欢</button><text class="deck-position">{{group.current + 1}} / {{group.items.length}}{{group.nextCursor ? '+' : ''}}</text></view>
-                </view>
-              </swiper-item>
-            </swiper>
-          </view>
-          <view class="deck-navigation"><text class="deck-hint">{{group.current === 0 && group.items.length > 1 ? '在卡片内上下滑动' : '点正文可查看完整内容'}}</text><view class="deck-arrows"><button class="deck-arrow" data-kind="{{group.kind}}" data-step="-1" bindtap="moveStack" disabled="{{group.current === 0}}" aria-label="上一张">↑</button><button class="deck-arrow" data-kind="{{group.kind}}" data-step="1" bindtap="moveStack" disabled="{{group.current === group.items.length - 1 && !group.nextCursor}}" aria-label="下一张">↓</button></view></view>
-          <button wx:if="{{group.nextCursor && group.current >= group.items.length - 1}}" class="deck-load" data-kind="{{group.kind}}" bindtap="loadStackMore" disabled="{{group.loading}}">{{group.loading ? '继续翻开…' : '继续看这一组'}}</button><text wx:if="{{group.error}}" class="error">{{group.error}}</text>
-        </view>
-        <view wx:if="{{lifeCaptures.length}}" class="capture-section">
-          <text class="section-title small">收好的念头</text>
-          <view wx:for="{{lifeCaptures}}" wx:key="id" class="capture-item">
-            <text class="capture-text">{{item.title || (item.type === 'IMAGE' ? '留下一张图片' : '留下一个念头')}}</text><text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text><text class="status">{{item.statusLabel}}</text>
-          </view>
-        </view>
+        <view class="life-intro"
+          ><text class="headline">生活里留下的</text
+          ><button class="text-button" bindtap="manualRefresh" disabled="{{busy}}">
+            更新
+          </button></view
+        >
+        <view wx:if="{{!sections.length && !lifeStacksLoading}}" class="empty paper-card"
+          ><text>还没有整理好的内容。</text><text class="copy">点下方的记录，留下第一个念头。</text
+          ><button class="secondary" bindtap="openCapture">开始记录</button></view
+        >
+        <view wx:for="{{sections}}" wx:for-item="section" wx:key="section" class="life-section"
+          ><view class="section-head"
+            ><view
+              ><text class="section-title"
+                >{{section.section === 'UPCOMING' ? '即行' : section.section === 'RECENT' ? '存照' :
+                section.section === 'REMEMBERED' ? '心愿' : section.title}}</text
+              ><text
+                wx:if="{{section.section === 'UPCOMING' || section.section === 'RECENT' || section.section === 'REMEMBERED'}}"
+                class="section-caption"
+                >{{section.title}}</text
+              ></view
+            ><button class="text-button" data-section="{{section.section}}" bindtap="openSection">
+              查看全部 →
+            </button></view
+          ><view
+            wx:for="{{section.items}}"
+            wx:key="id"
+            class="life-item"
+            data-id="{{item.id}}"
+            bindtap="viewLifeItem"
+            aria-role="button"
+            aria-label="查看{{item.title}}"
+            ><text wx:if="{{item.placeLabel}}" class="life-place">{{item.placeLabel}}</text
+            ><text class="item-title">{{item.title}}</text
+            ><text wx:if="{{item.summary}}" class="item-summary">{{item.summary}}</text
+            ><view class="life-item-footer"
+              ><text>{{item.kindLabel}}</text><text class="arrow">→</text></view
+            ></view
+          ></view
+        >
+        <view wx:if="{{lifeStacks.length}}" class="category-section"
+          ><text class="section-title small">按类型翻阅</text
+          ><view class="category-links"
+            ><button
+              wx:for="{{lifeStacks}}"
+              wx:key="kind"
+              class="secondary category-link"
+              data-kind="{{item.kind}}"
+              bindtap="openCategory"
+            >
+              {{item.title}} →
+            </button></view
+          ></view
+        >
+        <view wx:if="{{lifeCaptures.length}}" class="capture-section"
+          ><text class="section-title small">还在整理的念头</text
+          ><view
+            wx:for="{{lifeCaptures}}"
+            wx:key="id"
+            class="capture-item"
+            data-id="{{item.id}}"
+            bindtap="viewCapture"
+            ><text class="capture-text"
+              >{{item.title || (item.type === 'IMAGE' ? '留下一张图片' : '留下一个念头')}}</text
+            ><view class="capture-meta"
+              ><text class="status">{{item.statusLabel}}</text
+              ><text wx:if="{{item.savedDate}}" class="saved-date">{{item.savedDate}}</text></view
+            ></view
+          ></view
+        >
       </block>
-      <text wx:if="{{notice && !(tab === 'now' && recommendation)}}" class="notice">{{notice}}</text>
-      <text wx:if="{{error && !sheet && !(tab === 'now' && recommendation)}}" class="error">{{error}}</text>
+      <text wx:if="{{notice && !sheet}}" class="notice">{{notice}}</text
+      ><text wx:if="{{error && !sheet && !routeSheet && !locationSheet}}" class="error"
+        >{{error}}</text
+      >
     </view>
   </scroll-view>
-  <view wx:if="{{userId}}" class="nav-area" style="padding-bottom: {{bottomInset}}px;">
-    <view class="bottom-nav">
-      <button class="nav-button {{tab === 'now' ? 'selected' : ''}}" data-tab="now" bindtap="switchTab">此刻</button>
-      <button class="capture-button" bindtap="openCapture" bindlongpress="chooseVoice" disabled="{{busy || voiceStatus === 'finishing'}}" aria-label="添加内容">＋</button>
-      <button class="nav-button {{tab === 'life' ? 'selected' : ''}}" data-tab="life" bindtap="switchTab">生活</button>
-    </view>
-  </view>
-  <view wx:if="{{sheet}}" class="scrim" bindtap="closeCapture">
-    <view class="input-sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 20}}px;">
-      <view class="section-head"><text class="section-title">{{inputMode === 'menu' ? '想留下什么？' : inputMode === 'voice' ? '说说你的想法' : inputMode === 'image' ? '留下一张图片' : '留下一句话'}}</text><button class="text-button" bindtap="closeCapture" disabled="{{busy}}">收起</button></view>
-      <view wx:if="{{inputMode === 'menu'}}" class="capture-choices">
-        <button hover-class="touch-pressed" class="choice-card" bindtap="chooseText"><text class="choice-title">写一句话</text><text class="choice-detail">输入或粘贴一个念头</text></button>
-        <button hover-class="touch-pressed" class="choice-card" bindtap="chooseVoice"><text class="choice-title">说一段话</text><text class="choice-detail">按住说话，松手就收好，上滑取消</text></button>
-        <button hover-class="touch-pressed" class="choice-card" bindtap="chooseImage"><text class="choice-title">留一张图片</text><text class="choice-detail">从相册选择，或现在拍下来</text></button>
-        <text wx:if="{{draft || imagePath}}" class="footnote">上次未提交的内容还在，选择后可继续编辑。</text>
-      </view>
-      <block wx:else>
-        <view wx:if="{{inputMode === 'voice'}}" class="voice-window {{voiceHolding ? 'listening' : ''}} {{voiceCancelGesture ? 'canceling' : ''}}">
-          <text class="voice-label">{{voiceCancelGesture ? '松手取消这段话' : voiceStatus === 'recording' ? '正在听，上滑可取消' : voiceStatus === 'connecting' ? voicePrompt : voiceStatus === 'finishing' ? '正在把这段话收好' : '按住说话，松手就收好'}}</text>
-          <view class="voice-flow"><text wx:for="{{voiceRows}}" wx:key="id" class="voice-line {{item.fading ? 'fading' : ''}}">{{item.text}}</text><text wx:if="{{voicePartial}}" class="voice-partial">{{voicePartial}}</text></view>
-          <view wx:if="{{voiceStatus === 'recording'}}" class="voice-wave"><view wx:for="{{waveBars}}" wx:key="index" style="transform: scaleY({{1 + voiceLevel * item * 5}});"></view></view>
-          <button class="hold-to-talk {{voiceHolding ? 'held' : ''}} {{voiceCancelGesture ? 'canceling' : ''}}" catchtouchstart="voiceTouchStart" catchtouchmove="voiceTouchMove" catchtouchend="voiceTouchEnd" catchtouchcancel="cancelVoice" disabled="{{busy || voiceStatus === 'finishing'}}">{{voiceCancelGesture ? '松手取消' : voiceHolding ? '松手收好' : '按住说话'}}</button>
-          <text class="footnote">一次最多 60 秒 · 上滑取消</text>
-        </view>
-        <view wx:if="{{inputMode === 'image' && imagePath}}" class="image-preview"><image src="{{imagePath}}" mode="aspectFit" class="capture-image" /><button class="text-button" bindtap="removeImage" disabled="{{busy}}">移除图片</button></view>
-        <button wx:if="{{inputMode === 'image' && !imagePath}}" class="image-empty" bindtap="chooseImage" disabled="{{imageLoading}}">{{imageLoading ? '正在读取图片…' : '选择或拍摄图片'}}</button>
-        <view wx:if="{{inputMode !== 'voice' || error}}"><textarea class="draft" value="{{draft}}" bindinput="editDraft" placeholder="{{imagePath ? '补充一句话（可选）' : '想去哪里，想做什么，或一直没忘的事……'}}" maxlength="5000" focus="{{sheet && inputMode === 'text'}}" disabled="{{busy || voiceStatus === 'recording' || voiceStatus === 'connecting' || voiceStatus === 'finishing'}}" cursor-spacing="24" adjust-position />
-        <text wx:if="{{error}}" class="error">{{error}}</text>
-        <button class="primary" bindtap="saveCapture" loading="{{busy}}" disabled="{{busy || imageLoading || voiceStatus === 'recording' || voiceStatus === 'connecting' || voiceStatus === 'finishing'}}">留下</button>
-        <text class="footnote">收好后会自动整理要点。</text></view>
-      </block>
-    </view>
-  </view>
+  <view wx:if="{{userId}}" class="nav-area" style="padding-bottom: {{bottomInset}}px;"
+    ><view class="bottom-nav"
+      ><button
+        class="nav-button {{tab === 'now' ? 'selected' : ''}}"
+        data-tab="now"
+        bindtap="switchTab"
+      >
+        此刻<view wx:if="{{tab === 'now'}}" class="nav-underline"></view></button
+      ><button
+        class="capture-button {{tab === 'journal' ? 'selected' : ''}}"
+        data-tab="journal"
+        bindtap="switchTab"
+        bindlongpress="chooseVoice"
+        aria-label="查看记录，长按打开语音记录"
+      >
+        记录</button
+      ><button
+        class="nav-button {{tab === 'life' ? 'selected' : ''}}"
+        data-tab="life"
+        bindtap="switchTab"
+      >
+        生活<view wx:if="{{tab === 'life'}}" class="nav-underline"></view></button></view
+  ></view>
+  <view wx:if="{{sheet}}" class="scrim" bindtap="closeCapture"
+    ><view class="input-sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 20}}px;"
+      ><view class="sheet-handle" aria-hidden="true"></view
+      ><view class="section-head"
+        ><text class="section-title"
+          >{{inputMode === 'menu' ? '捕捉片刻灵感' : inputMode === 'voice' ? '说说你的想法' :
+          inputMode === 'image' ? '图文随记' : '写上一句'}}</text
+        ><button
+          class="close-button"
+          bindtap="closeCapture"
+          disabled="{{busy}}"
+          aria-label="收起记录面板"
+        >
+          ×
+        </button></view
+      ><view wx:if="{{inputMode === 'menu'}}" class="capture-choices"
+        ><text class="sheet-copy">留下一份想法，随时为你整理。</text
+        ><button class="choice-card" bindtap="chooseImage">
+          <view class="choice-icon">▧</view
+          ><view
+            ><text class="choice-title">相册照片</text
+            ><text class="choice-detail">截图、海报或拍下的门头照片</text></view
+          ><text class="arrow">→</text></button
+        ><button class="choice-card" bindtap="chooseText">
+          <view class="choice-icon">✎</view
+          ><view
+            ><text class="choice-title">写上一句</text
+            ><text class="choice-detail">想去的地方、备忘或闪过的念头</text></view
+          ><text class="arrow">→</text></button
+        ><button class="choice-card" bindtap="chooseVoice">
+          <view class="choice-icon">◉</view
+          ><view
+            ><text class="choice-title">说一段话</text
+            ><text class="choice-detail">按住说话，松手收好，上滑取消</text></view
+          ><text class="arrow">→</text></button
+        ><text wx:if="{{draft || imagePath}}" class="footnote"
+          >上次未提交的内容还在，选择后可继续编辑。</text
+        ></view
+      ><block wx:else
+        ><view
+          wx:if="{{inputMode === 'voice'}}"
+          class="voice-window {{voiceHolding ? 'listening' : ''}} {{voiceCancelGesture ? 'canceling' : ''}}"
+          ><text class="voice-label"
+            >{{voiceCancelGesture ? '松手取消这段话' : voiceStatus === 'recording' ?
+            '正在听，上滑可取消' : voiceStatus === 'connecting' ? voicePrompt : voiceStatus ===
+            'finishing' ? '正在把这段话收好' : '按住说话，松手就收好'}}</text
+          ><view class="voice-flow"
+            ><text
+              wx:for="{{voiceRows}}"
+              wx:key="id"
+              class="voice-line {{item.fading ? 'fading' : ''}}"
+              >{{item.text}}</text
+            ><text wx:if="{{voicePartial}}" class="voice-partial">{{voicePartial}}</text></view
+          ><view wx:if="{{voiceStatus === 'recording'}}" class="voice-wave"
+            ><view
+              wx:for="{{waveBars}}"
+              wx:key="index"
+              style="transform: scaleY({{1 + voiceLevel * item * 5}});"
+            ></view></view
+          ><button
+            class="hold-to-talk {{voiceHolding ? 'held' : ''}} {{voiceCancelGesture ? 'canceling' : ''}}"
+            catchtouchstart="voiceTouchStart"
+            catchtouchmove="voiceTouchMove"
+            catchtouchend="voiceTouchEnd"
+            catchtouchcancel="cancelVoice"
+            disabled="{{busy || voiceStatus === 'finishing'}}"
+          >
+            {{voiceCancelGesture ? '松手取消' : voiceHolding ? '松手收好' : '按住说话'}}</button
+          ><text class="voice-limit">最多 60 秒 · 上滑取消</text></view
+        ><view wx:if="{{inputMode === 'image' && imagePath}}" class="image-preview"
+          ><image
+            src="{{imagePath}}"
+            mode="aspectFit"
+            class="capture-image"
+            bindtap="previewCaptureImage"
+          /><view class="image-actions"
+            ><button class="text-button" bindtap="chooseImage" disabled="{{busy}}">重新选择</button
+            ><button class="text-button" bindtap="removeImage" disabled="{{busy}}">
+              移除图片
+            </button></view
+          ></view
+        ><button
+          wx:if="{{inputMode === 'image' && !imagePath}}"
+          class="image-empty"
+          bindtap="chooseImage"
+          disabled="{{imageLoading}}"
+        >
+          {{imageLoading ? '正在读取图片…' : '选择或拍摄图片'}}</button
+        ><view wx:if="{{inputMode !== 'voice' || error}}">
+          <textarea
+            class="draft"
+            value="{{draft}}"
+            bindinput="editDraft"
+            placeholder="{{imagePath ? '补充一句话（可选）' : '想去哪里，想做什么，或一直没忘的事……'}}"
+            maxlength="5000"
+            focus="{{sheet && inputMode === 'text'}}"
+            disabled="{{busy || voiceStatus === 'recording' || voiceStatus === 'connecting' || voiceStatus === 'finishing'}}"
+            cursor-spacing="24"
+            adjust-position
+          /><view class="editor-meta"
+            ><text>{{draft.length}} / 5000 字</text
+            ><button
+              wx:if="{{inputMode === 'text'}}"
+              class="text-button"
+              bindtap="chooseImage"
+              disabled="{{busy}}"
+            >
+              ＋ 配图
+            </button></view
+          ><view class="arrangement-rows">
+            <view class="arrangement-row"
+              ><text>预约日期</text><text class="arrangement-value">待接入</text></view
+            >
+            <view class="arrangement-row"
+              ><text>关联票券</text><text class="arrangement-value">待接入</text></view
+            > </view
+          ><text wx:if="{{error}}" class="error">{{error}}</text
+          ><button wx:if="{{capturePermission}}" class="secondary" bindtap="openCapturePermissions" disabled="{{busy}}">打开微信权限设置</button
+          ><button
+            class="primary"
+            bindtap="saveCapture"
+            loading="{{busy}}"
+            disabled="{{busy || imageLoading || voiceStatus === 'recording' || voiceStatus === 'connecting' || voiceStatus === 'finishing'}}"
+          >
+            {{inputMode === 'image' && imagePath ? '确认存下' : '存下这句话'}}
+          </button></view
+        ></block
+      ></view
+    ></view
+  >
+  <view wx:if="{{conditionsSheet}}" class="scrim" bindtap="closeConditions"
+    ><view
+      class="input-sheet condition-sheet"
+      catchtap="noop"
+      style="padding-bottom: {{bottomInset + 20}}px;"
+      ><view class="sheet-handle" aria-hidden="true"></view
+      ><view class="section-head"
+        ><text class="section-title">调整当次条件</text
+        ><button class="close-button" bindtap="closeConditions" aria-label="关闭条件调整">
+          ×
+        </button></view
+      ><text class="sheet-copy">仅对当次建议生效，不改变长期偏好。</text
+      ><text class="condition-label">出门意愿</text
+      ><view class="condition-options"
+        ><button
+          class="condition-option {{conditionGoingOut === 'yes' ? 'chosen' : ''}}"
+          data-field="goingOut"
+          data-value="yes"
+          bindtap="selectCondition"
+        >
+          想出去走走</button
+        ><button
+          class="condition-option {{conditionGoingOut === 'any' ? 'chosen' : ''}}"
+          data-field="goingOut"
+          data-value="any"
+          bindtap="selectCondition"
+        >
+          还没决定</button
+        ><button
+          class="condition-option {{conditionGoingOut === 'no' ? 'chosen' : ''}}"
+          data-field="goingOut"
+          data-value="no"
+          bindtap="selectCondition"
+        >
+          在家待着
+        </button></view
+      ><text class="condition-label">可用时间</text
+      ><view class="condition-options"
+        ><button
+          class="condition-option {{conditionMinutes === '30' ? 'chosen' : ''}}"
+          data-field="minutes"
+          data-value="30"
+          bindtap="selectCondition"
+        >
+          30 分钟</button
+        ><button
+          class="condition-option {{conditionMinutes === '120' ? 'chosen' : ''}}"
+          data-field="minutes"
+          data-value="120"
+          bindtap="selectCondition"
+        >
+          2 小时</button
+        ><button
+          class="condition-option {{conditionMinutes === '240' ? 'chosen' : ''}}"
+          data-field="minutes"
+          data-value="240"
+          bindtap="selectCondition"
+        >
+          4 小时</button
+        ><button
+          class="condition-option {{conditionMinutes === 'any' ? 'chosen' : ''}}"
+          data-field="minutes"
+          data-value="any"
+          bindtap="selectCondition"
+        >
+          不设限制
+        </button></view
+      ><text class="condition-label">预算范围</text
+      ><view class="condition-options"
+        ><button
+          class="condition-option {{conditionBudget === 'any' ? 'chosen' : ''}}"
+          data-field="budget"
+          data-value="any"
+          bindtap="selectCondition"
+        >
+          随意</button
+        ><button
+          class="condition-option {{conditionBudget === '10000' ? 'chosen' : ''}}"
+          data-field="budget"
+          data-value="10000"
+          bindtap="selectCondition"
+        >
+          100 元内</button
+        ><button
+          class="condition-option {{conditionBudget === '0' ? 'chosen' : ''}}"
+          data-field="budget"
+          data-value="0"
+          bindtap="selectCondition"
+        >
+          无需花费
+        </button></view
+      ><button class="primary" bindtap="applyConditions" disabled="{{busy}}">按当前条件生成</button
+      ><button
+        class="text-button sheet-bottom-link"
+        bindtap="decideWithoutConditions"
+        disabled="{{busy}}"
+      >
+        不设条件，重新看看
+      </button></view
+    ></view
+  >
+  <view wx:if="{{routeSheet}}" class="scrim" bindtap="closeRouteSheet"
+    ><view
+      class="input-sheet route-sheet"
+      catchtap="noop"
+      style="padding-bottom: {{bottomInset + 20}}px;"
+      ><view class="section-head"
+        ><text class="section-title">行动指引</text
+        ><button
+          class="close-button"
+          bindtap="closeRouteSheet"
+          disabled="{{busy}}"
+          aria-label="关闭行动指引"
+        >
+          ×
+        </button></view
+      ><text class="route-heading"
+        >{{routeView ? routeView.destinationLabel : mapDestination ? mapDestination.name :
+        recommendation.headline}}</text
+      ><view wx:if="{{routeView}}" class="route-preview"
+        ><text wx:if="{{routeView.destinationAddress}}" class="location-choice-address"
+          >{{routeView.destinationAddress}}</text
+        ><text wx:if="{{routeView.destinationSourceText}}" class="route-privacy"
+          >{{routeView.destinationSourceText}}</text
+        ><map
+          id="recommendation-route"
+          class="route-map"
+          latitude="{{routeView.latitude}}"
+          longitude="{{routeView.longitude}}"
+          markers="{{routeView.markers}}"
+          polyline="{{routeView.polyline || []}}"
+          include-points="{{routeView.points}}"
+          show-location="{{false}}"
+          enable-scroll="{{false}}"
+          enable-zoom="{{false}}"
+          bindtap="openRouteDestination"
+          bindmarkertap="openRouteDestination"
+          aria-label="上次查询的去程路线与所选目的地"
+        /><text class="route-duration">{{routeView.durationText}}</text
+        ><text wx:if="{{routeView.selectionText}}" class="route-status"
+          >{{routeView.selectionText}}</text
+        ><text class="route-privacy">{{routeView.checkedAtText}} · 可更新路线</text
+        ><text class="route-blocker">{{departureReason}}</text
+        ><button class="primary" bindtap="openRouteDestination">
+          在微信地图中查看目的地 →
+        </button></view
+      ><view wx:elif="{{!mapSelection}}" class="route-empty"
+        ><text
+          >{{mapDestination ? '目的地已确认，路线尚未查询。' :
+          '先选择并确认你想去的具体位置。'}}</text
+        ><text class="route-privacy">这里会显示实际查询的路线与用时。</text></view
+      ><view
+        wx:if="{{!(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}"
+        class="destination-picker"
+        ><button
+          class="secondary"
+          bindtap="chooseDestination"
+          loading="{{mapPickerBusy}}"
+          disabled="{{busy}}"
+        >
+          {{mapDestination && routeNeedsEntrance ? '选择目的地出入口' : (routeView || mapDestination
+          ? '更换地点或选择出入口' : '在微信地图中搜索地点')}}</button
+        ><text class="route-privacy"
+          >{{mapDestination && routeNeedsEntrance ?
+          '校区、园区等大地点，可搜索具体校门或出入口，再确认完整地址。' :
+          '使用微信地图搜索与选择你想去的位置。'}}</text
+        ></view
+      ><view wx:if="{{mapSelection}}" class="location-choices"
+        ><text class="location-choice-heading">确认你在微信地图选择的位置</text
+        ><text class="location-choice-title">{{mapSelection.name}}</text
+        ><text class="location-choice-address">{{mapSelection.address}}</text
+        ><text class="route-privacy">请核对具体校区和完整地址；确认后将用这个位置安排路线。</text
+        ><button
+          class="primary"
+          bindtap="confirmMapSelection"
+          disabled="{{busy}}"
+          loading="{{mapPickerBusy}}"
+        >
+          使用这个位置</button
+        ><button
+          class="text-button sheet-bottom-link"
+          bindtap="cancelMapSelection"
+          disabled="{{busy}}"
+        >
+          取消，保留原建议
+        </button></view
+      ><view wx:if="{{mapDestination && !mapSelection && !routeView}}" class="selected-destination"
+        ><text class="route-privacy">你选择的地图地点</text
+        ><text class="location-choice-title">{{mapDestination.name}}</text
+        ><text class="location-choice-address">{{mapDestination.address}}</text></view
+      ><view
+        wx:if="{{canVerifyRoute && hasConfirmedDestination && !(recommendation.progress && recommendation.progress.state === 'ACTIVE')}}"
+        class="route-check"
+        ><button
+          class="secondary"
+          bindtap="verifyCurrentRoute"
+          loading="{{routeLocationBusy}}"
+          disabled="{{busy}}"
+        >
+          {{routeLocationBusy ? '正在查询路线…' : (routeView ? '更新路线' : '用当前位置核对路程')}}</button
+        ><text wx:if="{{routeStatus}}" class="route-status">{{routeStatus}}</text></view
+      ><text wx:if="{{departureReason && !routeView}}" class="route-blocker"
+        >{{departureReason}}</text
+      ><text wx:if="{{error}}" class="error">{{error}}</text
+      ><text class="footnote">路线仅保留在本次小程序会话中；退出登录后清除。</text></view
+    ></view
+  >
+  <view wx:if="{{locationSheet}}" class="scrim location-scrim" bindtap="closeLocationSheet"
+    ><view class="input-sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 20}}px;"
+      ><view class="section-head"
+        ><text class="section-title">核对这次路程</text
+        ><button class="close-button" bindtap="closeLocationSheet" aria-label="关闭位置说明">
+          ×
+        </button></view
+      ><text class="headline question-title">需要你的当前位置，来计算去程路线。</text
+      ><text class="copy"
+        >只有你主动查询时才会读取位置，用于本次建议和腾讯地图路线查询。查询结果会显示时间，方便你判断是否需要更新。</text
+      ><view class="privacy-note"
+        ><text>位置仅用于这次查询</text
+        ><text class="route-privacy"
+          >不记录实时运动轨迹。退出登录会清除本次会话的路线缓存。</text
+        ></view
+      ><button class="primary" bindtap="confirmRouteLocation" disabled="{{busy}}">
+        允许并查询当前位置</button
+      ><button class="text-button sheet-bottom-link" bindtap="closeLocationSheet">
+        稍后再查
+      </button></view
+    ></view
+  >
+  <view wx:if="{{captureReview}}" class="scrim" bindtap="closeCaptureReview"
+    ><view class="input-sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 20}}px;"
+      ><view class="section-head"
+        ><text class="section-title">记录核对</text
+        ><button class="close-button" bindtap="closeCaptureReview" aria-label="关闭记录核对">
+          ×
+        </button></view
+      ><image
+        wx:if="{{captureReview.imagePath}}"
+        class="review-image"
+        src="{{captureReview.imagePath}}"
+        mode="aspectFit"
+        bindtap="previewCaptureImage"
+      /><text class="review-title">{{captureReview.title}}</text
+      ><text class="status">{{captureReview.statusLabel}}</text
+      ><view class="review-note"
+        ><text class="condition-label">整理的要点</text
+        ><text class="body-copy">{{captureReview.summary}}</text
+        ><text wx:if="{{captureReview.phase === 'NEEDS_REVIEW'}}" class="route-privacy"
+          >这些内容需要核对，请以你的原始记录为准。</text
+        ></view
+      ><view wx:if="{{captureReview.original}}" class="review-note"
+        ><text class="condition-label">原始文字</text
+        ><text class="body-copy original-copy">{{captureReview.original}}</text></view
+      ><button class="primary" bindtap="closeCaptureReview">完成返回</button></view
+    ></view
+  >
 </view>

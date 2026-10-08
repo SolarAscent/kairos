@@ -17,7 +17,7 @@ export type ClientConfig = {
 export interface ClientPlatform {
   send(input: {
     url: string;
-    method: "GET" | "POST" | "DELETE";
+    method: "GET" | "POST" | "PATCH" | "DELETE";
     data?: unknown;
     headers: Record<string, string>;
   }): Promise<{ status: number; body: unknown }>;
@@ -91,7 +91,7 @@ export class ApiClient {
   private async raw<T>(
     path: string,
     schema: z.ZodType<T>,
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     data?: unknown,
     token?: string,
     key?: string,
@@ -193,11 +193,11 @@ export class ApiClient {
   async request<T>(
     path: string,
     schema: z.ZodType<T>,
-    options: { method?: "GET" | "POST" | "DELETE"; data?: unknown; key?: string } = {},
+    options: { method?: "GET" | "POST" | "PATCH" | "DELETE"; data?: unknown; key?: string } = {},
   ): Promise<T> {
     const epoch = this.epoch;
     if (!this.session) throw new ClientError("LOGIN_REQUIRED");
-    if ((options.method === "POST" || options.method === "DELETE") && !options.key)
+    if (["POST", "PATCH", "DELETE"].includes(options.method ?? "GET") && !options.key)
       throw new ClientError("IDEMPOTENCY_KEY_REQUIRED");
     if (this.session.expiresAt <= Date.now() + 30000) await this.refresh();
     const usedToken = this.session?.accessToken;
