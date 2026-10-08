@@ -1,0 +1,63 @@
+<view class="screen {{reduceMotion ? 'reduce-motion' : ''}}" style="padding-top: {{topInset}}px; padding-bottom: {{bottomInset}}px;">
+  <view class="topbar"><button class="back" bindtap="back" aria-label="返回">‹</button><text class="title">设置</text><view class="spacer"></view></view>
+  <scroll-view class="content" scroll-y>
+    <view class="page-body">
+      <view class="intro"><text class="headline">生活节奏与尺度</text><text class="copy">行动建议会参考时间、预算和出门意愿；区域名称仅作文字偏好，不会自动定位。</text></view>
+      <text wx:if="{{!loaded && !error}}" class="message">正在读取设定…</text>
+      <button wx:if="{{error && !loaded}}" class="retry" bindtap="load" loading="{{busy}}" disabled="{{busy}}">重新读取</button>
+
+      <view class="group"><text class="group-title">生活推荐偏好</text>
+        <button class="row" data-field="relaxation" bindtap="openSheet"><view class="row-copy"><text class="row-title">放松方式</text><text class="row-value">{{relaxationLabel}}</text></view><text class="chevron">›</text></button>
+        <button class="row" data-field="defaultMinutes" bindtap="openSheet"><view class="row-copy"><text class="row-title">通常有多少时间</text><text class="row-value">{{minutesLabel}}</text></view><text class="chevron">›</text></button>
+        <button class="row" data-field="defaultBudget" bindtap="openSheet"><view class="row-copy"><text class="row-title">出门预算</text><text class="row-value">{{budgetLabel}}</text></view><text class="chevron">›</text></button>
+        <button class="row" data-field="goingOut" bindtap="openSheet"><view class="row-copy"><text class="row-title">出门意愿</text><text class="row-value">{{goingOutLabel}}</text></view><text class="chevron">›</text></button>
+      </view>
+
+      <view class="group"><text class="group-title">常用地点</text>
+        <button class="row" data-field="homeRegion" bindtap="openSheet"><view class="row-copy"><text class="row-title">常住区域</text><text class="row-value">{{homeRegion || '尚未填写'}}</text></view><text class="chevron">›</text></button>
+        <button class="row" data-field="frequentAreas" bindtap="openSheet"><view class="row-copy"><text class="row-title">常去片区</text><text class="row-value">{{frequentAreasLabel}}</text></view><text class="chevron">›</text></button>
+      </view>
+
+      <view class="group"><text class="group-title">外观与体验</text>
+        <view class="row read-row"><view class="row-copy"><text class="row-title">主题外观</text><text class="row-value">暖调手账 · 新主题待接入</text></view></view>
+        <view class="row"><view class="row-copy"><text class="row-title">弱化动效</text><text class="row-value">{{reduceMotion ? '已开启' : '已关闭'}}</text></view><switch checked="{{reduceMotion}}" bindchange="toggleMotion" color="#A95F3F" /></view>
+      </view>
+
+      <view class="group"><text class="group-title">权限与隐私</text>
+        <view class="row"><view class="row-copy"><text class="row-title">用于路线核对的位置</text><text class="row-value">开启后可在核对路程时获取</text></view><switch checked="{{useLocation}}" data-field="useLocation" bindchange="togglePreference" color="#A95F3F" /></view>
+        <button class="row" bindtap="openPermissions"><view class="row-copy"><text class="row-title">定位权限说明</text><text class="row-value">仅按你的操作请求，不自动读取</text></view><text class="chevron">›</text></button>
+        <button class="row" bindtap="openPermissions"><view class="row-copy"><text class="row-title">麦克风权限</text><text class="row-value">用于语音记录转写</text></view><text class="chevron">›</text></button>
+        <view class="row"><view class="row-copy"><text class="row-title">提醒偏好</text><text class="row-value">{{notificationsEnabled ? '已记录偏好 · 推送服务待接入' : '推送服务待接入'}}</text></view><switch checked="{{notificationsEnabled}}" data-field="notificationsEnabled" bindchange="togglePreference" color="#A95F3F" /></view>
+        <button class="row" bindtap="clearCache" loading="{{cacheBusy}}" disabled="{{cacheBusy}}"><view class="row-copy"><text class="row-title">清除图片缓存</text><text class="row-value">只清除本机临时预览文件</text></view><text class="chevron">›</text></button>
+        <button class="row" bindtap="exportRecords" loading="{{exportBusy}}" disabled="{{exportBusy}}"><view class="row-copy"><text class="row-title">导出记录</text><text class="row-value">{{exportStatus || '导出服务待接入'}}</text></view><text class="chevron">›</text></button>
+      </view>
+
+      <text wx:if="{{error}}" class="error">{{error}}</text><text wx:if="{{status}}" class="status">{{status}}</text>
+      <button class="save {{dirty ? 'ready' : ''}}" bindtap="save" loading="{{busy}}" disabled="{{busy || !dirty || !loaded}}">保存设定</button>
+      <button class="signout" bindtap="signOut" disabled="{{busy}}">退出登录</button>
+    </view>
+  </scroll-view>
+
+  <view wx:if="{{sheetField}}" class="scrim" bindtap="closeSheet">
+    <view class="sheet" catchtap="noop" style="padding-bottom: {{bottomInset + 18}}px;">
+      <view class="sheet-head"><text class="sheet-title">{{sheetTitle}}</text><button class="sheet-close" bindtap="closeSheet">完成</button></view>
+      <view wx:if="{{sheetField === 'relaxation'}}" class="sheet-options">
+        <button class="sheet-option {{relaxation === 'QUIET' ? 'selected' : ''}}" data-field="relaxation" data-value="QUIET" bindtap="chooseOption">安静待一会儿</button>
+        <button class="sheet-option {{relaxation === 'EXPLORE' ? 'selected' : ''}}" data-field="relaxation" data-value="EXPLORE" bindtap="chooseOption">出门看看新鲜事</button>
+        <button class="sheet-option {{relaxation === 'SOCIAL' ? 'selected' : ''}}" data-field="relaxation" data-value="SOCIAL" bindtap="chooseOption">和朋友一起</button>
+        <button class="sheet-option {{relaxation === 'ANY' ? 'selected' : ''}}" data-field="relaxation" data-value="ANY" bindtap="chooseOption">看当下心情</button>
+      </view>
+      <view wx:if="{{sheetField === 'defaultMinutes'}}" class="sheet-options horizontal">
+        <button class="sheet-option {{defaultMinutes === 15 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="15" bindtap="chooseOption">15 分钟</button><button class="sheet-option {{defaultMinutes === 30 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="30" bindtap="chooseOption">半小时</button><button class="sheet-option {{defaultMinutes === 60 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="60" bindtap="chooseOption">1 小时</button><button class="sheet-option {{defaultMinutes === 120 ? 'selected' : ''}}" data-field="defaultMinutes" data-value="120" bindtap="chooseOption">2 小时</button>
+      </view>
+      <view wx:if="{{sheetField === 'defaultBudget'}}" class="sheet-options">
+        <button class="sheet-option {{defaultBudget === 50 ? 'selected' : ''}}" data-field="defaultBudget" data-value="50" bindtap="chooseOption">人均 50 元以内</button><button class="sheet-option {{defaultBudget === 100 ? 'selected' : ''}}" data-field="defaultBudget" data-value="100" bindtap="chooseOption">人均 100 元以内</button><button class="sheet-option {{defaultBudget === null ? 'selected' : ''}}" data-field="defaultBudget" data-value="null" bindtap="chooseOption">不设预算</button>
+      </view>
+      <view wx:if="{{sheetField === 'goingOut'}}" class="sheet-options">
+        <button class="sheet-option {{goingOut === 'YES' ? 'selected' : ''}}" data-field="goingOut" data-value="YES" bindtap="chooseOption">愿意出门</button><button class="sheet-option {{goingOut === 'NO' ? 'selected' : ''}}" data-field="goingOut" data-value="NO" bindtap="chooseOption">想留在家</button><button class="sheet-option {{goingOut === 'UNKNOWN' ? 'selected' : ''}}" data-field="goingOut" data-value="UNKNOWN" bindtap="chooseOption">每次再决定</button>
+      </view>
+      <view wx:if="{{sheetField === 'homeRegion'}}"><textarea class="sheet-input" value="{{homeRegionDraft}}" bindinput="editHomeRegion" maxlength="120" placeholder="例如：广州市越秀区文德路周边" /><button class="sheet-apply" bindtap="applyHomeRegion">保存这项</button></view>
+      <view wx:if="{{sheetField === 'frequentAreas'}}"><textarea class="sheet-input tall" value="{{frequentAreasDraft}}" bindinput="editFrequentAreas" maxlength="1000" placeholder="每行填写一个片区，最多 8 个" /><button class="sheet-apply" bindtap="applyFrequentAreas">保存这项</button></view>
+    </view>
+  </view>
+</view>

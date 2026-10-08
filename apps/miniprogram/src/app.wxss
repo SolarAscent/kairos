@@ -1,6 +1,18 @@
-page { background: #F5F7F6; color: #233C35; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; font-size: 30rpx; }
-view, scroll-view, button, textarea { box-sizing: border-box; }
+page { background: #FAF5ED; color: #2C1B14; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 30rpx; font-style: normal; }
+view, scroll-view, button, textarea, input { box-sizing: border-box; }
+view, text, button, input, textarea, picker { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-style: normal; }
 button { margin: 0; padding: 0; font: inherit; background: transparent; color: inherit; border-radius: 0; }
 button::after { border: 0; }
-button[disabled] { opacity: .5; color: #72827B; }
+button[disabled] { opacity: .5; color: #9C8578; }
 text { display: block; }
+.journal-page { background-color: #FAF5ED; background-image: radial-gradient(#E5D7C5 0.7px, transparent 0.7px); background-size: 16px 16px; color: #2C1B14; }
+.paper-card { position: relative; background: #FFFDF9; border: 1rpx solid #EADECF; border-radius: 18rpx; box-shadow: 0 10rpx 28rpx rgba(75,40,15,.06); padding: 32rpx; }
+.paper-card::before { content: ''; position: absolute; width: 116rpx; height: 30rpx; top: -15rpx; left: 50%; margin-left: -58rpx; background: rgba(232,211,179,.75); transform: rotate(-3deg); }
+.page-title { font-size: 44rpx; font-weight: 650; line-height: 1.35; }
+.body-copy { font-size: 30rpx; line-height: 1.7; color: #6E5346; }
+.primary-button { min-height: 88rpx; padding: 20rpx 28rpx; background: #9C4A1A; border-radius: 18rpx; color: #FFFDF9; font-size: 30rpx; font-weight: 600; line-height: 1.4; display: flex; align-items: center; justify-content: center; }
+.secondary-button { min-height: 88rpx; padding: 20rpx 28rpx; background: #F2E8D7; border: 1rpx solid #DFCEB5; border-radius: 18rpx; color: #6E5346; font-size: 30rpx; line-height: 1.4; display: flex; align-items: center; justify-content: center; }
+.touch-pressed { opacity: .8; transform: translateY(1rpx); }
+.sheet-scrim { position: fixed; inset: 0; z-index: 80; background: rgba(44,27,20,.3); display: flex; align-items: flex-end; }
+.journal-sheet { width: 100%; max-height: 88%; overflow-y: auto; background: #FAF5ED; border-radius: 36rpx 36rpx 0 0; padding: 32rpx; }
+.reduce-motion, .reduce-motion view, .reduce-motion button, .reduce-motion text { animation: none !important; transition: none !important; }

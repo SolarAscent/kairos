@@ -1,4 +1,5 @@
 import "../../lib/zod-runtime";
+import { reaction } from "mobx-miniprogram";
 import {
   lifeSectionSchema,
   lifeSectionTitles,
@@ -9,16 +10,18 @@ import {
   lifeDeckResponseSchema,
   lifeDeckRequestSchema,
   lifeRatingAcceptedSchema,
+  userSettingsResponseSchema,
   type LifeBrowseItem,
   type LifeSection,
   type LifeSearchRequest,
 } from "@life/contracts";
+import { getAppearance } from "../../lib/appearance";
 import type { AppServices } from "../../lib/session";
 import { userMessage } from "../../lib/errors";
 import { getCurrentLocation } from "../../lib/location";
 import { kindOptions, displayLifeItem, groupLifeItems, type LifeStack } from "../../lib/life";
 
-const { client } = getApp<{ globalData: AppServices }>().globalData;
+const { client, sessionStore } = getApp<{ globalData: AppServices }>().globalData;
 const locationAttempts = new Map<string, number>();
 const locationAttemptTtl = 15 * 60000;
 function locationAttemptKey(owner: string, item: LifeBrowseItem) {
@@ -26,12 +29,14 @@ function locationAttemptKey(owner: string, item: LifeBrowseItem) {
 }
 function createRuntime() {
   return {
+    identityDispose: undefined as (() => void) | undefined,
     unloaded: false,
     hidden: false,
     owner: client.userId,
     generation: 0,
     deckKind: null as LifeBrowseItem["kind"] | null,
     categoryPage: false,
+    shownOnce: false,
     ratingGeneration: 0,
     ratingPending: new Map<string, { signature: string; key: string }>(),
     ratingFlights: new Set<string>(),
@@ -52,7 +57,13 @@ function createRuntime() {
 function createData() {
   return {
     section: "RECENT" as LifeSection,
+    searchMode: false,
     title: "最近留下",
+    loggedIn: Boolean(client.userId),
+    reduceMotion: getAppearance(client).reduceMotion,
+    query: "",
+    searchDraft: "",
+    kindChips: kindOptions.map((option, index) => ({ label: option.label, index })),
     topInset: 92,
     bottomInset: 24,
     timeOptions: ["全部时间", "最近 7 天", "最近 30 天", "最近 90 天"],
@@ -75,12 +86,47 @@ function createData() {
 }
 Page({
   data: createData(),
-  runtime: createRuntime(),
+  runtime: null as unknown as ReturnType<typeof createRuntime>,
   updateData(values: Partial<ReturnType<typeof createData>>) {
     if (!this.runtime.unloaded) {
       if (values.items) values.groups = groupLifeItems(values.items, this.data.groups);
       this.setData(values);
     }
+  },
+  observeIdentity() {
+    const state = this.runtime;
+    state.identityDispose = reaction(
+      () => sessionStore.userId,
+      () => {
+        if (this.runtime === state && !state.unloaded) this.syncOwner();
+      },
+    );
+  },
+  syncOwner() {
+    const state = this.runtime;
+    if (state.owner === client.userId || state.unloaded) return;
+    this.stopLocationPolling();
+    state.identityDispose?.();
+    state.unloaded = true;
+    state.generation++;
+    state.ratingGeneration++;
+    this.runtime = createRuntime();
+    this.runtime.hidden = state.hidden;
+    this.runtime.shownOnce = state.shownOnce;
+    this.runtime.deckKind = state.deckKind;
+    this.runtime.categoryPage = state.categoryPage;
+    const { section, searchMode, title, kindIndex, topInset, bottomInset } = this.data;
+    this.updateData({
+      ...createData(),
+      section,
+      searchMode,
+      title,
+      kindIndex,
+      topInset,
+      bottomInset,
+    });
+    this.observeIdentity();
+    if (!this.runtime.hidden && this.runtime.owner) void this.loadItems(true);
   },
   onLoad(options: Record<string, string | undefined>) {
     this.runtime = createRuntime();
@@ -93,7 +139,18 @@ Page({
     const info = wx.getWindowInfo();
     this.updateData({
       section,
-      title: deckKind ? kindOptions[kindIndex]!.label : lifeSectionTitles[section],
+      searchMode: options.mode === "search",
+      query: (options.query ?? "").trim().slice(0, 120),
+      searchDraft: (options.query ?? "").trim().slice(0, 120),
+      title:
+        options.mode === "search"
+          ? "搜索"
+          : options.mode === "nearby"
+            ? "附近已记录地点"
+            : deckKind
+              ? kindOptions[kindIndex]!.label
+              : lifeSectionTitles[section],
+      locationIndex: options.mode === "nearby" ? 3 : 0,
       kindIndex: deckKind ? kindIndex : 0,
       deckView: Boolean(deckKind),
       topInset: Math.max(
@@ -102,30 +159,35 @@ Page({
       ),
       bottomInset: Math.max(16, info.screenHeight - (info.safeArea?.bottom ?? info.screenHeight)),
     });
-    void this.loadItems(true);
+    this.observeIdentity();
+    void this.loadItems(true, options.mode !== "nearby");
   },
   onShow() {
+    const wasHidden = this.runtime.hidden;
     this.runtime.hidden = false;
+    this.updateData({ reduceMotion: getAppearance(client).reduceMotion });
+    this.updateData({ loggedIn: Boolean(client.userId) });
+    if (!this.runtime.shownOnce) {
+      this.runtime.shownOnce = true;
+      if (!wasHidden) return;
+    }
     if (this.runtime.owner !== client.userId) {
-      this.stopLocationPolling();
-      const { deckKind, categoryPage } = this.runtime;
-      this.runtime = createRuntime();
-      this.runtime.deckKind = deckKind;
-      this.runtime.categoryPage = categoryPage;
-      void this.loadItems(true);
-    } else if (this.data.loaded && this.runtime.locationQuery) {
-      // Reuse the original query; returning to the page never requests GPS.
-      void this.refreshLocationResults();
-      this.scheduleLocationPoll(2500);
+      this.syncOwner();
+    } else if (wasHidden || this.data.loaded) {
+      // Resume interrupted reads and refresh detail edits using the existing coordinates only.
+      void this.loadItems(true, true);
     }
   },
   onHide() {
     this.runtime.hidden = true;
     this.runtime.ratingGeneration++;
-    this.updateData({ stackDragging: false, ratingBusy: [] });
+    this.runtime.generation++;
+    this.updateData({ stackDragging: false, ratingBusy: [], loading: false, locating: false });
     this.stopLocationPolling(false);
   },
   onUnload() {
+    this.runtime.identityDispose?.();
+    this.runtime.identityDispose = undefined;
     this.stopLocationPolling();
     this.runtime.unloaded = true;
     this.runtime.generation++;
@@ -281,7 +343,8 @@ Page({
     }
   },
   goBack() {
-    wx.navigateBack();
+    if (getCurrentPages().length > 1) wx.navigateBack();
+    else wx.reLaunch({ url: "/pages/home/index?tab=life" });
   },
   noop() {},
   stackTouchStart() {
@@ -316,13 +379,7 @@ Page({
   },
   viewLifeItem(event: WechatMiniprogram.TouchEvent) {
     const item = this.data.items.find((item) => item.id === event.currentTarget.dataset.id);
-    if (item)
-      wx.showModal({
-        title: item.title,
-        content: item.summary || item.title,
-        showCancel: false,
-        confirmText: "收起",
-      });
+    if (item) wx.navigateTo({ url: `/pages/life-detail/index?id=${item.id}&type=${item.kind}` });
   },
   async rateLifeItem(event: WechatMiniprogram.TouchEvent) {
     const state = this.runtime;
@@ -395,7 +452,12 @@ Page({
     const state = this.runtime;
     const owner = client.userId;
     const isCurrent = () =>
-      this.runtime === state && !state.unloaded && !state.hidden && client.userId === owner;
+      this.runtime === state &&
+      !state.unloaded &&
+      !state.hidden &&
+      state.owner === owner &&
+      client.userId === owner;
+    if (!isCurrent() || !owner) return;
     const index = Number(event.detail.value);
     if (index >= 3) {
       this.updateData({ locating: true, error: "" });
@@ -404,29 +466,72 @@ Page({
       } catch (error) {
         if (isCurrent())
           this.updateData({
-            error: `${userMessage(error)} 也可以选择全部地点继续查看。`,
+            error:
+              error instanceof Error && error.message === "定位偏好读取失败"
+                ? "暂时无法读取定位偏好，请重试；本次未获取位置。"
+                : error instanceof Error && error.message === "Location cancelled"
+                  ? "本次未获取位置。可选择全部地点继续查看。"
+                  : `${userMessage(error)} 也可以选择全部地点继续查看。`,
           });
         return;
       } finally {
-        this.updateData({ locating: false });
+        if (isCurrent()) this.updateData({ locating: false });
       }
     } else this.runtime.center = null;
     if (!isCurrent()) return;
     this.updateData({ locationIndex: index });
     await this.loadItems(true);
   },
-  async currentCenter() {
+  async currentCenter(reuseOnly = false) {
     const state = this.runtime;
     const owner = client.userId;
-    if (state.center && Date.now() - state.center.acquiredAt < 5 * 60000) return state.center;
+    if (!owner || state.owner !== owner || state.unloaded || state.hidden)
+      throw new Error("Session changed");
+    if (state.center && (reuseOnly || Date.now() - state.center.acquiredAt < 5 * 60000))
+      return state.center;
+    if (reuseOnly) throw new Error("请重新选择附近范围获取位置");
+    const isCurrent = () =>
+      this.runtime === state &&
+      !state.unloaded &&
+      !state.hidden &&
+      Boolean(owner) &&
+      client.userId === owner;
+    let settings;
+    try {
+      settings = await client.request("/v1/settings", userSettingsResponseSchema);
+    } catch {
+      throw new Error("定位偏好读取失败");
+    }
+    if (!isCurrent()) throw new Error("Session changed");
+    if (!settings.privacy.useLocation) {
+      const consent = await wx.showModal({
+        title: "本次使用当前位置？",
+        content: "你的定位偏好尚未开启。本次仅用当前位置查找附近已记录地点，不会修改偏好。",
+        confirmText: "本次允许",
+        cancelText: "不用定位",
+      });
+      if (!isCurrent() || !consent.confirm) throw new Error("Location cancelled");
+    }
+    if (!isCurrent()) throw new Error("Session changed");
     const point = await getCurrentLocation();
     const center = { latitude: point.latitude, longitude: point.longitude, acquiredAt: Date.now() };
     if (this.runtime === state && !state.unloaded && !state.hidden && client.userId === owner)
       state.center = center;
     return center;
   },
-  async loadItems(reset = false) {
+  async loadItems(reset = false, reuseCenter = true) {
     const state = this.runtime;
+    const owner = client.userId;
+    if (!owner) {
+      this.updateData({ items: [], loaded: false, loggedIn: false, loading: false });
+      return;
+    }
+    const isCurrent = () =>
+      this.runtime === state &&
+      !state.unloaded &&
+      !state.hidden &&
+      state.owner === owner &&
+      client.userId === owner;
     if (state.unloaded || (!reset && (this.data.loading || !this.data.nextCursor))) return;
     const generation = reset ? ++state.generation : state.generation;
     if (reset) this.stopLocationPolling();
@@ -437,11 +542,18 @@ Page({
     });
     try {
       const index = this.data.locationIndex;
-      const center = index >= 3 ? await this.currentCenter() : undefined;
-      if (generation !== state.generation || state.unloaded) return;
-      const useDeck = Boolean(state.deckKind) && this.data.timeIndex === 0 && index === 0;
+      const center = index >= 3 ? await this.currentCenter(reuseCenter) : undefined;
+      if (generation !== state.generation || !isCurrent()) return;
+      const useDeck =
+        Boolean(state.deckKind) &&
+        !this.data.searchMode &&
+        this.data.timeIndex === 0 &&
+        index === 0 &&
+        !this.data.query;
       const input = lifeSearchRequestSchema.parse({
         section: this.data.section,
+        scope: this.data.searchMode ? "ALL_RECORDED" : "SECTION",
+        query: this.data.query || undefined,
         savedWithinDays: ([undefined, 7, 30, 90] as const)[this.data.timeIndex],
         kind: kindOptions[this.data.kindIndex]?.value,
         location: (["ALL", "LOCATED", "UNLOCATED", "NEARBY", "NEARBY", "NEARBY"] as const)[index],
@@ -471,7 +583,7 @@ Page({
           key: await client.newKey(),
         },
       );
-      if (generation !== state.generation || state.unloaded) return;
+      if (generation !== state.generation || !isCurrent()) return;
       const previous = reset ? [] : this.data.items;
       const ids = new Set(previous.map((item) => item.id));
       this.updateData({
@@ -485,19 +597,54 @@ Page({
       });
       void this.queueLocationRefresh(result.items, input, generation, useDeck);
     } catch (error) {
-      if (generation === state.generation) this.updateData({ error: userMessage(error) });
+      if (generation === state.generation && isCurrent())
+        this.updateData({
+          error:
+            error instanceof Error && error.message === "定位偏好读取失败"
+              ? "暂时无法读取定位偏好，请重试；本次未获取位置。"
+              : error instanceof Error && error.message === "Location cancelled"
+                ? "本次未获取位置。可选择全部地点继续查看。"
+                : userMessage(error),
+        });
     } finally {
-      if (generation === state.generation) this.updateData({ loading: false });
+      if (generation === state.generation && isCurrent()) this.updateData({ loading: false });
     }
+  },
+  searchInput(event: WechatMiniprogram.Input) {
+    this.updateData({ searchDraft: event.detail.value });
+  },
+  submitSearch() {
+    this.updateData({ query: this.data.searchDraft.trim() });
+    void this.loadItems(true);
+  },
+  clearSearch() {
+    this.updateData({ query: "", searchDraft: "" });
+    void this.loadItems(true);
+  },
+  selectKind(event: WechatMiniprogram.TouchEvent) {
+    const index = Number(event.currentTarget.dataset.index);
+    if (!kindOptions[index]) return;
+    this.updateData({ kindIndex: index });
+    if (this.runtime.categoryPage) {
+      this.runtime.deckKind = kindOptions[index]?.value ?? null;
+      if (!this.data.searchMode)
+        this.updateData({
+          title: this.runtime.deckKind ? kindOptions[index]!.label : "生活里留下的",
+        });
+    }
+    void this.loadItems(true);
+  },
+  login() {
+    wx.reLaunch({ url: "/pages/home/index" });
   },
   refresh() {
     this.runtime.locationConfigured = undefined;
-    void this.loadItems(true);
+    void this.loadItems(true, false);
   },
   loadMore() {
     void this.loadItems();
   },
   retry() {
-    void this.loadItems(!this.data.loaded || !this.data.nextCursor);
+    void this.loadItems(!this.data.loaded || !this.data.nextCursor, false);
   },
 });

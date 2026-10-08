@@ -9,9 +9,10 @@ import {
   lifeObjects,
   recommendations,
   users,
+  userSettings,
   type Database,
 } from "@life/db";
-import type { NowContext } from "@life/contracts";
+import { recommendationSettingsSchema, type NowContext } from "@life/contracts";
 import { normalizeLifeTime, selectRouteForWindow } from "@life/domain";
 import {
   isGeoPoint,
@@ -238,6 +239,30 @@ export class BuildDecisionContextService {
       .where(and(eq(users.id, userId), eq(users.status, "ACTIVE"), isNull(users.deletedAt)))
       .limit(1);
     if (!user) throw new NotFoundException({ code: "CONTEXT_USER_NOT_FOUND" });
+    const [savedSettings] = await reader
+      .select({ recommendation: userSettings.recommendationSettings })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId))
+      .limit(1);
+    if (savedSettings) {
+      const saved = recommendationSettingsSchema.safeParse(savedSettings.recommendation);
+      if (saved.success) {
+        const preferences = saved.data;
+        const mood = { QUIET: "LOW_ENERGY", EXPLORE: "CURIOUS", SOCIAL: "SOCIAL" } as const;
+        input = {
+          availableMinutes: preferences.defaultMinutes,
+          ...(preferences.defaultBudget != null
+            ? { budgetMinor: Math.round(preferences.defaultBudget * 100) }
+            : {}),
+          ...(preferences.goingOut !== "UNKNOWN"
+            ? { willingToGoOut: preferences.goingOut === "YES" }
+            : {}),
+          ...(preferences.relaxation !== "ANY" ? { mood: mood[preferences.relaxation] } : {}),
+          // A stored neighborhood is not a current GPS position or route origin.
+          ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)),
+        };
+      }
+    }
     await this.purgeExpiredSnapshots(userId, reader, now);
     let timezone = user.timezone;
     try {
